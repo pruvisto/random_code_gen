@@ -1,0 +1,8 @@
+chapter AFP
+
+session Random_Code_Generation (AFP) = "HOL-Probability" +
+  options [timeout = 1200]
+  theories
+    Random_Stream_Monad
+  document_files
+    "root.tex"
