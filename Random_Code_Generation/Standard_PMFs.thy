@@ -3,8 +3,8 @@ theory Standard_PMFs
     "HOL-Probability.Probability" 
 begin
 
-text \<open>This is a library of code equations for common pmfs based on the primitve nat_pmf, which are
-all being reduced to sampling a natural number uniformly from a range.\<close>
+text \<open>This is a library of code equations for common pmfs based on the primitve nat_pmf, which
+performs sampling a natural number uniformly from a range.\<close>
 
 definition nat_pmf :: "nat \<Rightarrow> nat pmf" where
   "nat_pmf n = pmf_of_set {0..n}"
@@ -38,7 +38,7 @@ proof -
 qed
 
 lemma eq_bernoulli_pmfI: "pmf d True = p \<Longrightarrow> d = bernoulli_pmf p"
-  by (metis pmf_False_conv_True pmf_bernoulli_True pmf_eq_iff pmf_le_1 pmf_nonneg)
+  by (metis (full_types) pmf_False_conv_True pmf_bernoulli_True pmf_eq_iff pmf_le_1 pmf_nonneg)
 
 lemma bernoulli_pmf_code [code]:
   "bernoulli_pmf (Ratreal p) = (let (a, b) = quotient_of (max 0 (min 1 p)) in

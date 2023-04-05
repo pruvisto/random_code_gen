@@ -106,10 +106,10 @@ text \<open>
 
 type_synonym 'a random_monad = "bool stream \<Rightarrow> 'a \<times> bool stream"
 
-fun rm_return :: "'a \<Rightarrow> 'a random_monad"
+definition rm_return :: "'a \<Rightarrow> 'a random_monad"
   where "rm_return x f = (x, f)"
 
-fun rm_bind :: "'a random_monad \<Rightarrow> ('a \<Rightarrow> 'b random_monad) \<Rightarrow> 'b random_monad"
+definition rm_bind :: "'a random_monad \<Rightarrow> ('a \<Rightarrow> 'b random_monad) \<Rightarrow> 'b random_monad"
   where "rm_bind x y f = case_prod y (x f)"
 
 adhoc_overloading Monad_Syntax.bind rm_bind
@@ -132,13 +132,13 @@ lemma space_coin_space: "space coin_space = UNIV"
 
 text \<open>This is the relation expressing that a randomized algorithm is a sampler for a given pmf.\<close>
 
-definition sampler_for where (* SWAP arguments, notation?, is_sampler_for *)
-  "sampler_for m r = (                  
+definition sampler_for where
+  "sampler_for r m = (                  
     distr coin_space (discrete \<Otimes>\<^sub>M coin_space) r = measure_pmf m \<Otimes>\<^sub>M coin_space \<and>
     r \<in> coin_space \<rightarrow>\<^sub>M discrete \<Otimes>\<^sub>M coin_space \<and> countable (range (fst \<circ> r)))"
 
 lemma rm_range_intro:
-  assumes "sampler_for m r"
+  assumes "sampler_for r m"
   assumes "x \<in> set_pmf m"
   shows "x \<in> range (fst \<circ> r)"
 proof (rule ccontr)
@@ -167,15 +167,15 @@ proof (rule ccontr)
   finally show "False" by simp
 qed
 
-lemma sample_for_bind:
-  assumes "sampler_for f f'"  (* TODO: Rename args r for randomized algorith, m for measure *)
-  assumes "\<And>x. x \<in> range (fst \<circ> f') \<Longrightarrow> sampler_for (g x) (g' x)" 
-  shows "sampler_for (f \<bind> g) (rm_bind f' g')"
+lemma sampler_for_bind:
+  assumes "sampler_for f' f"  (* TODO: Rename args r for randomized algorith, m for measure *)
+  assumes "\<And>x. x \<in> range (fst \<circ> f') \<Longrightarrow> sampler_for (g' x) (g x)" 
+  shows "sampler_for (rm_bind f' g') (f \<bind> g) "
 proof -
   let ?M = "measure_pmf f"
   let ?N = "\<lambda>x. measure_pmf (g x)"
   let ?C = "coin_space"
-  let ?D = "count_space UNIV"
+  let ?D = "discrete"
   let ?R = "restrict_space ?M (range (fst \<circ> f'))"
 
   have m_g: "case_prod g' \<in> ?R \<Otimes>\<^sub>M ?C \<rightarrow>\<^sub>M ?D \<Otimes>\<^sub>M ?C"
@@ -226,7 +226,7 @@ proof -
     by simp
 
   have "distr ?C (?D \<Otimes>\<^sub>M ?C) (rm_bind f' g') = distr ?C (?D \<Otimes>\<^sub>M ?C) (\<lambda>\<omega>. case_prod g' (f' \<omega>))"
-    unfolding rm_bind.simps by simp
+    unfolding rm_bind_def by simp
   also have "... =  distr (distr ?C (?R \<Otimes>\<^sub>M ?C) f') (?D \<Otimes>\<^sub>M ?C) (case_prod g')"
     using m_g m_f by (subst distr_distr) (simp_all add:comp_def)
   also have "... = distr (?R \<Otimes>\<^sub>M ?C) (?D \<Otimes>\<^sub>M ?C) (case_prod g')"
@@ -275,29 +275,95 @@ proof -
       (simp_all add:space_subprob_algebra Pi_def subprob_spaceI)+
   also have "... = measure_pmf (bind_pmf f g) \<Otimes>\<^sub>M coin_space"
     unfolding measure_pmf_bind by simp
-  finally have "distr coin_space (?D \<Otimes>\<^sub>M ?C) (rm_bind f' g') = measure_pmf (bind_pmf f g) \<Otimes>\<^sub>M ?C"
+  finally have 4:"distr coin_space (?D \<Otimes>\<^sub>M ?C) (rm_bind f' g') = measure_pmf (bind_pmf f g) \<Otimes>\<^sub>M ?C"
     by simp
 
-  moreover have "(\<lambda>\<omega>. rm_bind f' g' \<omega>) \<in> ?C \<rightarrow>\<^sub>M (?D \<Otimes>\<^sub>M ?C)"
-    using m_f m_g by simp
+  have 5:"(\<lambda>\<omega>. rm_bind f' g' \<omega>) \<in> ?C \<rightarrow>\<^sub>M (?D \<Otimes>\<^sub>M ?C)"
+    using m_f m_g unfolding rm_bind_def by simp
 
-  moreover have "countable (range (fst \<circ> rm_bind f' g'))"
-    apply (simp add:case_prod_beta)
-    sorry
-    (* This part is straightforward *)
+  have "range (fst \<circ> rm_bind f' g') = range (\<lambda>x. fst (g' (fst (f' x)) (snd (f' x))))"
+    unfolding rm_bind_def by (simp add:case_prod_beta)
+  also have "... \<subseteq> (\<Union>x \<in> range (fst \<circ> f'). range (fst \<circ> g' x))"
+    by (intro subsetI) auto
+  finally have "range (fst \<circ> rm_bind f' g') \<subseteq> (\<Union>x \<in> range (fst \<circ> f'). range (fst \<circ> g' x))"
+    by simp
+  moreover have "countable (\<Union>x \<in> range (fst \<circ> f'). range (fst \<circ> g' x))"
+    using assms unfolding sampler_for_def by (intro countable_UN) auto
 
-  ultimately show ?thesis
+  ultimately have 6:"countable (range (fst \<circ> rm_bind f' g'))"
+    using countable_subset by auto
+
+  show ?thesis using 4 5 6
     unfolding sampler_for_def by blast
 qed
 
-lemma sampler_for_coin: "sampler_for coin rm_coin"
-  sorry
+lemma sampler_for_coin: "sampler_for rm_coin coin"
+proof -
+  let ?C = "coin_space"
+  let ?D = "discrete"
+  let ?M = "measure_pmf (pmf_of_set (UNIV :: bool set))"
 
-lemma sampler_for_return: "sampler_for (return_pmf x) (rm_return x)"
-  unfolding sampler_for_def rm_return.simps apply simp
-  sorry
+  have "emeasure (distr ?C (?D \<Otimes>\<^sub>M ?C) rm_coin) A = emeasure (measure_pmf coin \<Otimes>\<^sub>M ?C) A"
+    (is "?L = ?R") if "A \<in> sets (distr ?C (?D \<Otimes>\<^sub>M ?C) rm_coin)" for A
+  proof -
+    have "A \<in> sets (?D \<Otimes>\<^sub>M ?C)" 
+      using that by simp 
+    moreover have "(\<lambda>x. (shd x, stl x)) \<in> ?C \<rightarrow>\<^sub>M ?D \<Otimes>\<^sub>M ?C"
+      unfolding coin_space_def by simp
+    ultimately have 0: "{x. (shd x, stl x) \<in> A} \<in> sets ?C"
+      unfolding measurable_def space_coin_space vimage_def by auto
 
-text \<open>Sampler for numbers in {0..<2^n}\<close>
+    have "?L = emeasure ?C (rm_coin -` A \<inter> space ?C)"
+      using that unfolding rm_coin_def coin_space_def by (subst emeasure_distr) simp_all
+    also have "... = emeasure ?C {x. (shd x, stl x) \<in> A}"
+      unfolding rm_coin_def vimage_def space_coin_space by simp
+    also have "... = \<integral>\<^sup>+ t. emeasure ?C {x \<in> space ?C. t ## x \<in> {x. (shd x, stl x) \<in> A}} \<partial>?M"
+      using 0 unfolding coin_space_def
+      by (intro prob_space.emeasure_stream_space prob_space_measure_pmf) simp
+    also have "... = \<integral>\<^sup>+ t. emeasure ?C {x. (t,x) \<in> A} \<partial>?M"
+      unfolding space_coin_space by simp
+    also have "... = \<integral>\<^sup>+ x. emeasure coin_space (Pair x -` A) \<partial>measure_pmf coin"
+      unfolding coin_def vimage_def by simp
+    also have "... = ?R"
+      using prob_space_imp_sigma_finite[OF coin_space] that
+      by (intro sigma_finite_measure.emeasure_pair_measure_alt[symmetric]) simp_all
+    finally show ?thesis 
+      by simp
+  qed
+  hence "distr ?C (?D \<Otimes>\<^sub>M ?C) rm_coin = measure_pmf coin \<Otimes>\<^sub>M ?C"
+    by (intro measure_eqI) (auto simp add:sets_pair_measure)
+
+  thus ?thesis
+    unfolding sampler_for_def coin_space_def rm_coin_def by simp
+qed
+
+lemma sampler_for_return: "sampler_for (rm_return x) (return_pmf x) "
+proof -
+  let ?C = "coin_space"
+  let ?D = "discrete"
+
+  have "emeasure (distr ?C (?D \<Otimes>\<^sub>M ?C) (Pair x)) A = emeasure (measure_pmf (return_pmf x) \<Otimes>\<^sub>M ?C) A"
+    (is "?L = ?R") if "A \<in> sets (distr ?C (?D \<Otimes>\<^sub>M ?C) (Pair x))" for A
+  proof -
+    have "?L = emeasure ?C (Pair x -` A \<inter> space ?C)"
+      using that by (intro emeasure_distr) simp_all
+    also have "... = \<integral>\<^sup>+ x. emeasure ?C (Pair x -` A) \<partial>measure_pmf (return_pmf x)"
+      unfolding space_coin_space by simp
+    also have "... = ?R"
+      using prob_space_imp_sigma_finite[OF coin_space] that
+      by (intro sigma_finite_measure.emeasure_pair_measure_alt[symmetric]) simp_all
+    finally show ?thesis
+      by simp
+  qed
+  hence "distr coin_space (?D \<Otimes>\<^sub>M ?C) (Pair x) = measure_pmf (return_pmf x) \<Otimes>\<^sub>M ?C"
+    by (intro measure_eqI)  (simp_all add:sets_pair_measure)
+  thus ?thesis
+    unfolding sampler_for_def rm_return_def by simp
+qed
+
+lemmas sampler_for_simps = sampler_for_return sampler_for_bind sampler_for_coin
+
+subsection \<open>Sampler for numbers in {0..<2^n}\<close>
 
 fun rm_uniform_pow :: "nat \<Rightarrow> nat random_monad"
   where 
@@ -309,6 +375,19 @@ fun rm_uniform_pow :: "nat \<Rightarrow> nat random_monad"
         rm_return (of_bool y + 2*x)
       }"
 
+fun pmf_uniform_pow :: "nat \<Rightarrow> nat pmf"
+  where 
+    "pmf_uniform_pow 0 = return_pmf 0" | 
+    "pmf_uniform_pow (Suc n) = 
+      do {
+        x \<leftarrow> pmf_uniform_pow n;
+        y \<leftarrow> coin;
+        return_pmf (of_bool y + 2*x)
+      }"
+
+lemma "sampler_for (rm_uniform_pow n) (pmf_uniform_pow n)"
+  by (induction n) (simp_all add:sampler_for_simps)
+
 text \<open>Sampler for pmf_of_set {0..n} *inclusive*\<close>
 
 function rm_uniform :: "nat \<Rightarrow> nat random_monad"
@@ -317,7 +396,7 @@ function rm_uniform :: "nat \<Rightarrow> nat random_monad"
       x \<leftarrow> rm_uniform_pow (floorlog 2 n);
       if x \<le> n then rm_return x else rm_uniform n
     }"
-  by pat_completeness auto
+    by pat_completeness auto
 
 (* TODO: Write this using the while combinator or a counter-part of it in the random_monad, the
 above variant does not allow code-gen. *)
