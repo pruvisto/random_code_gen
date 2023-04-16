@@ -1,6 +1,9 @@
 theory PMF_Sampler
-  imports Main "HOL-Probability.Probability"
+  imports Main "HOL-Probability.Probability" "HOL-Library.Code_Lazy"
 begin
+
+lemma Option_bind_conv_case: "Option.bind x f = (case x of None \<Rightarrow> None | Some x \<Rightarrow> f x)"
+  by (auto split: option.splits)
 
 lemma stake_shift:
   "stake m (xs @- ys) = (if m \<le> length xs then take m xs else xs @ stake (m - length xs) ys)"
@@ -440,6 +443,42 @@ definition bind_pmfsr :: "'a pmfsr \<Rightarrow> ('a \<Rightarrow> 'b pmfsr) \<R
   "bind_pmfsr r f bs =
      do {(x, m) \<leftarrow> r bs; (y, n) \<leftarrow> f x (sdrop m bs); Some (y, m + n)}"
 
+adhoc_overloading Monad_Syntax.bind bind_pmfsr
+
+definition map_pmfsr :: "('a \<Rightarrow> 'b) \<Rightarrow> 'a pmfsr \<Rightarrow> 'b pmfsr" where
+  "map_pmfsr f r bs = map_option (map_prod f id) (r bs)"
+
+lemma map_pmfsr_id [simp]: "map_pmfsr id r = r"
+  by (auto simp: fun_eq_iff map_pmfsr_def return_pmfsr_def Option_bind_conv_case map_option_case
+           split: option.splits)
+
+lemma map_pmfsr_id' [simp]: "map_pmfsr (\<lambda>x. x) r = r"
+  by (auto simp: fun_eq_iff map_pmfsr_def return_pmfsr_def Option_bind_conv_case map_option_case
+           split: option.splits)
+
+lemma map_pmfsr_comp: "map_pmfsr (f \<circ> g) r = map_pmfsr f (map_pmfsr g r)"
+  by (auto simp: fun_eq_iff map_pmfsr_def return_pmfsr_def Option_bind_conv_case map_option_case
+           split: option.splits)
+
+lemma map_pmfsr_conv_bind_pmfsr: "map_pmfsr f r = bind_pmfsr r (\<lambda>x. return_pmfsr (f x))"
+  by (auto simp: fun_eq_iff bind_pmfsr_def return_pmfsr_def map_pmfsr_def Option_bind_conv_case
+           split: option.splits)
+
+lemma bind_return_pmfsr': "bind_pmfsr r return_pmfsr = r"
+  by (auto simp: fun_eq_iff bind_pmfsr_def return_pmfsr_def Option_bind_conv_case
+           split: option.splits)
+
+lemma bind_return_pmfsr: "bind_pmfsr (return_pmfsr x) r = r x"
+  by (auto simp: fun_eq_iff bind_pmfsr_def return_pmfsr_def  Option_bind_conv_case
+           split: option.splits)
+
+lemma bind_assoc_pmfsr: "(A :: 'a pmfsr) \<bind> B \<bind> C = A \<bind> (\<lambda>x. B x \<bind> C)"
+  by (auto simp: fun_eq_iff bind_pmfsr_def return_pmfsr_def Option_bind_conv_case
+           split: option.splits)  
+
+
+
+
 lemma range_return_pmfsr [simp]: "range_pmfsr (return_pmfsr x) = {x}"
   by (auto simp: return_pmfsr_def range_pmfsr_def)
 
@@ -469,9 +508,6 @@ proof -
   ultimately show ?thesis
     unfolding wf_pmfsr_def coin_pmfsr_def range_pmfsr_def by auto
 qed
-
-lemma Option_bind_conv_case: "Option.bind x f = (case x of None \<Rightarrow> None | Some x \<Rightarrow> f x)"
-  by (auto split: option.splits)
 
 lemma range_bind_pmfsr_subset:
   "range_pmfsr (bind_pmfsr r f) \<subseteq> (\<Union>x\<in>range_pmfsr r. range_pmfsr (f x))"
@@ -834,22 +870,80 @@ proof -
     apply (auto simp: measure_pmfsr'_def pmfsr_space_def)
     done
 qed
-    
-  
-    
-    
+
+lemma measure_pmfsr_conv_measure_pmfsr':
+  "measure_pmfsr r = distr (measure_pmfsr' r) (count_space UNIV) (map_option fst)"
+  unfolding measure_pmfsr_def measure_pmfsr'_def
+  apply (subst distr_distr)
+    defer
+    defer
+  apply (rule arg_cong[of _ _ "distr coin_space (count_space UNIV)"])
+    apply (auto simp: run_pmfsr_def fun_eq_iff map_option_case split: option.splits)
+  sorry
 
 
+lemma measure_bind_pmfsr:
+  assumes "wf_pmfsr r"
+  assumes "\<And>x. x \<in> range_pmfsr r \<Longrightarrow> wf_pmfsr (f x)"
+  shows   "measure_pmfsr (bind_pmfsr r f) =
+             do {x \<leftarrow> measure_pmfsr r;
+                 case x of
+                   None \<Rightarrow> return (count_space UNIV) None
+                 | Some x \<Rightarrow> measure_pmfsr (f x)}"
+proof -
+  have "measure_pmfsr (bind_pmfsr r f) = 
+        distr coin_space (count_space UNIV)
+          (\<lambda>bs. case r bs of None \<Rightarrow> None | Some (y, n) \<Rightarrow> map_option fst (f y (sdrop n bs)))"
+    unfolding measure_pmfsr_def bind_pmfsr_def
+    by (intro arg_cong[of _ _ "distr coin_space (count_space UNIV)"])
+       (auto split: option.splits simp: fun_eq_iff Option_bind_conv_case)
 
-lemma
-  assumes "wf_pmfsr p" "Y \<in> sets coin_space"
-  shows   "measure (run_pmfsr' r) (Some ` (X \<times> Y)) =
-           (1 - loss_pmfsr r) *
-           measure coin_space {bs. case r bs of None \<Rightarrow> False | Some (y, _) \<Rightarrow> y \<in> X} * 
-           measure coin_space Y"
-  oops
-
-
+  have "do {x \<leftarrow> measure_pmfsr r;
+            case x of
+              None \<Rightarrow> return (count_space UNIV) None
+            | Some x \<Rightarrow> measure_pmfsr (f x)} =
+        distr (
+           do {x \<leftarrow> measure_pmfsr r;
+             case x of
+               None \<Rightarrow> return pmfsr_space None
+             | Some x \<Rightarrow> distr coin_space pmfsr_space (\<lambda>bs. Some (x, bs))})
+       (count_space UNIV)
+       (\<lambda>x. case x of None \<Rightarrow> None | Some (x, bs') \<Rightarrow> map_option fst (f x bs'))"
+    apply (subst distr_bind[where K = pmfsr_space])
+    prefer 4
+       apply (intro bind_cong refl)
+       apply (auto split: option.splits simp: measure_pmfsr_def o_def)
+        apply (subst distr_return)
+          apply (auto)
+         prefer 3
+         apply (subst distr_distr)
+           apply (auto)
+           prefer 3
+           apply (rule arg_cong[of _ _ "distr coin_space (count_space UNIV)"])
+           apply (auto simp: fun_eq_iff split: option.splits)
+    sorry
+  also have "do {x \<leftarrow> measure_pmfsr r;
+             case x of
+               None \<Rightarrow> return pmfsr_space None
+             | Some x \<Rightarrow> distr coin_space pmfsr_space (\<lambda>bs. Some (x, bs))} =
+             measure_pmfsr' r"
+    by (rule measure_pmfsr'_conv_measure_pmfsr [symmetric])
+  also have "distr (measure_pmfsr' r) (count_space UNIV) 
+               (\<lambda>x. case x of None \<Rightarrow> None | Some (x, bs') \<Rightarrow> map_option fst (f x bs')) =
+             distr coin_space (count_space UNIV)
+               (\<lambda>bs. case r bs of None \<Rightarrow> None | Some (y, n) \<Rightarrow> map_option fst (f y (sdrop n bs)))"
+    unfolding measure_pmfsr'_def
+    apply (subst distr_distr)
+    prefer 3
+    apply (rule arg_cong[of _ _ "distr coin_space (count_space UNIV)"])
+      apply (auto simp: o_def fun_eq_iff run_pmfsr_def split: option.splits)
+    sorry
+  also have "\<dots> = measure_pmfsr (bind_pmfsr r f)"
+    unfolding measure_pmfsr_def bind_pmfsr_def
+    by (intro arg_cong[of _ _ "distr coin_space (count_space UNIV)"])
+       (auto split: option.splits simp: fun_eq_iff Option_bind_conv_case)
+  finally show ?thesis ..
+qed
 
 context
 begin
@@ -857,17 +951,17 @@ begin
 interpretation pmf_as_measure .
 
 lift_definition spmf_of_pmfsr :: "'a pmfsr \<Rightarrow> 'a spmf" is
-  "\<lambda>r. if wf_pmfsr r then distr coin_space (count_space UNIV) (map_option fst \<circ> r)
+  "\<lambda>r. if wf_pmfsr r then measure_pmfsr r
        else return (count_space UNIV) None"
 proof goal_cases
   case (1 r)
   define M where "M = (if wf_pmfsr r then
-                         distr coin_space (count_space UNIV) (map_option fst \<circ> r)
+                         measure_pmfsr r
                        else return (count_space UNIV) None)"
   have "coin_space.random_variable (count_space UNIV) (map_option fst \<circ> r)" if "wf_pmfsr r"
     by (rule measurable_comp[OF measurable_pmfsr[OF that]]) auto
   then interpret M: prob_space M
-    by (auto simp: M_def intro!: coin_space.prob_space_distr prob_space_return)
+    by (auto simp: M_def measure_pmfsr_def intro!: coin_space.prob_space_distr prob_space_return)
   show ?case
     unfolding M_def [symmetric]
   proof (intro conjI)
@@ -875,7 +969,7 @@ proof goal_cases
       by (fact M.prob_space_axioms)
   next
     show "sets M = UNIV"
-      by (simp add: M_def)
+      by (simp add: M_def measure_pmfsr_def)
   next
     show "AE x in M. Sigma_Algebra.measure M {x} \<noteq> 0"
     proof (cases "wf_pmfsr r")
@@ -888,10 +982,10 @@ proof goal_cases
           by (intro always_eventually)
              (auto simp: options_def map_option_case intro: imageI in_range_pmfsrI split: option.splits)
         hence "AE x in M. x \<in> options (range_pmfsr r)"
-          unfolding M_def using True meas by (simp add: AE_distr_iff)
+          unfolding M_def measure_pmfsr_def using True meas by (simp add: AE_distr_iff)
         thus "\<exists>S. countable S \<and> (AE x in M. x \<in> S)"
           by (intro exI[of _ "options (range_pmfsr r)"]) (use True countable_range_pmfsr in auto)
-      qed (auto simp: M_def)
+      qed (auto simp: M_def measure_pmfsr_def)
     next
       case False
       thus ?thesis
@@ -900,12 +994,14 @@ proof goal_cases
   qed
 qed
 
+end
+
 lemma spmf_of_return_pmfsr:
   "spmf_of_pmfsr (return_pmfsr x) = return_spmf x"
 proof -
   have "measure_pmf (spmf_of_pmfsr (return_pmfsr x)) =
           distr coin_space (count_space UNIV) (map_option fst \<circ> return_pmfsr x)"
-    by (subst spmf_of_pmfsr.rep_eq) (auto simp: wf_return_pmfsr)
+    by (subst spmf_of_pmfsr.rep_eq) (auto simp: wf_return_pmfsr measure_pmfsr_def)
   also have "map_option fst \<circ> return_pmfsr x = (\<lambda>_. Some x)"
     by (auto simp: fun_eq_iff return_pmfsr_def)
   also have "distr coin_space (count_space UNIV) \<dots> = return (count_space UNIV) (Some x)"
@@ -921,7 +1017,7 @@ lemma spmf_of_coin_pmfsr:
 proof -
   have "measure_pmf (spmf_of_pmfsr coin_pmfsr) =
           distr coin_space (count_space UNIV) (map_option fst \<circ> coin_pmfsr)"
-    by (subst spmf_of_pmfsr.rep_eq) (auto simp: wf_coin_pmfsr)
+    by (subst spmf_of_pmfsr.rep_eq) (auto simp: wf_coin_pmfsr measure_pmfsr_def)
   also have "map_option fst \<circ> coin_pmfsr = Some \<circ> shd"
     by (auto simp: fun_eq_iff coin_pmfsr_def)
   also have "distr coin_space (count_space UNIV) \<dots> =
@@ -938,11 +1034,6 @@ proof -
     using measure_pmf_inject by auto
 qed
 
-(*
-definition run_pmfsr
-  where "run_pmfsr = distr coin_space (option_measure (count_space UNIV \<Otimes>\<^sub>M coin_space))
-*)
-
 lemma spmf_of_bind_pmfsr:
   assumes "wf_pmfsr r"
   assumes "\<And>x. x \<in> range_pmfsr r \<Longrightarrow> wf_pmfsr (f x)"
@@ -950,76 +1041,396 @@ lemma spmf_of_bind_pmfsr:
 proof -
   note meas1 [measurable] = measurable_pmfsr [OF assms(1)]
   note meas2 [measurable] = measurable_pmfsr [OF assms(2)]
+  have r: "measure_pmfsr r = measure_pmf (spmf_of_pmfsr r)"
+    using assms(1) by (simp add: spmf_of_pmfsr.rep_eq)
 
-  have "measure_pmf (bind_spmf (spmf_of_pmfsr r) (spmf_of_pmfsr \<circ> f)) =
-          measure_pmf (spmf_of_pmfsr r) \<bind>
-          (\<lambda>x. measure_pmf (case x of None \<Rightarrow> return_pmf None | Some x \<Rightarrow> spmf_of_pmfsr (f x)))"
-    unfolding bind_spmf_def bind_pmf.rep_eq o_def id_def ..
-  also have "\<dots> = measure_pmf (spmf_of_pmfsr r) \<bind>
-                    (\<lambda>x. case x of 
-                           None \<Rightarrow> return (count_space UNIV) None 
-                         | Some x \<Rightarrow> measure_pmf (spmf_of_pmfsr (f x)))"
-    by (intro bind_cong) (auto split: option.splits simp: return_pmf.rep_eq)
-  also have "\<dots> = distr coin_space (count_space UNIV) (map_option fst \<circ> r) \<bind>
-                    (\<lambda>x. case x of 
-                           None \<Rightarrow> return (count_space UNIV) None 
-                         | Some x \<Rightarrow> distr coin_space (count_space UNIV) (map_option fst \<circ> f x))"
-    using assms
-    apply (intro bind_cong_AE[of _ _ _ "count_space UNIV"])
-       apply (auto split: option.splits simp: spmf_of_pmfsr.rep_eq)
+  have "measure_pmf (spmf_of_pmfsr (bind_pmfsr r f)) = measure_pmfsr (bind_pmfsr r f)"
+    using assms wf_bind_pmfsr by (subst spmf_of_pmfsr.rep_eq) auto
+  also have "\<dots> = measure_pmfsr r \<bind>
+                  case_option (return (count_space UNIV) None) (\<lambda>x. measure_pmfsr (f x))"
+    using assms by (subst measure_bind_pmfsr) auto
+  also have "\<dots> = measure_pmf (bind_spmf (spmf_of_pmfsr r) (spmf_of_pmfsr \<circ> f))"
+    unfolding bind_spmf_def bind_pmf.rep_eq o_def id_def r
+    apply (intro bind_cong_AE)
+       apply (auto simp: AE_measure_pmf_iff)
+      prefer 3
+    using assms(2)
+      apply (auto split: option.splits simp: return_pmf.rep_eq spmf_of_pmfsr.rep_eq)
     sorry
-  also have "\<dots> = coin_space \<bind>
-                 (\<lambda>x. case r x of
-                        None \<Rightarrow> return (count_space UNIV) None
-                      | Some x2 \<Rightarrow> distr coin_space (count_space UNIV)
-                                     (\<lambda>x. map_option fst (f (fst x2) x)))"
-    apply (subst bind_distr[of _ _ _ _ "count_space UNIV"])
-       apply (auto simp: space_coin_space split: option.splits)
-      apply (auto simp: o_def cong: option.case_cong)
-    sorry
-  also have "\<dots> = coin_space \<bind>
-                 (\<lambda>x. case r x of
-                        None \<Rightarrow> return (count_space UNIV) None
-                      | Some x2 \<Rightarrow> distr coin_space (count_space UNIV)
-                          (\<lambda>bs. map_option fst (f (fst x2) (sdrop (snd x2) bs))))"
-  proof (intro bind_cong option.case_cong refl, goal_cases)
-    case (1 bs xn)
-    obtain x n where [simp]: "xn = (x, n)"
-      by (cases xn)
-    have "distr coin_space (count_space UNIV) (\<lambda>x. map_option fst (f (fst xn) x)) = 
-          distr (distr coin_space coin_space (sdrop n)) (count_space UNIV)
-                (\<lambda>x. map_option fst (f (fst xn) x))"
-      sorry
-    also have "\<dots> = distr coin_space (count_space UNIV) (\<lambda>bs. map_option fst (f x (sdrop n bs)))"
-      apply (subst distr_distr)
-        apply (auto simp: coin_space_def o_def)
-      sorry
-    finally show ?case
-      by simp
-  qed
+  finally show ?thesis
+    using measure_pmf_inject by auto
+qed
 
 
-  also 
-find_theorems distr subprob_algebra
-    find_theorems subprob_algebra return
-    find_theorems bind name:cong almost_everywhere
+definition ord_pmfsr :: "'a pmfsr \<Rightarrow> 'a pmfsr \<Rightarrow> bool" where
+  "ord_pmfsr = rel_fun (=) (ord_option (=))"
 
 
-  have "measure_pmf (spmf_of_pmfsr (bind_pmfsr r f)) =
-          distr coin_space (count_space UNIV) (map_option fst \<circ> bind_pmfsr r f)"
-    using assms by (subst spmf_of_pmfsr.rep_eq) (auto simp: wf_coin_pmfsr wf_bind_pmfsr)
-  also have "\<dots> = distr coin_space (count_space UNIV) (map_option fst \<circ> r)
-    \<bind> (\<lambda>x. 
-    distr (option_measure (count_space UNIV \<Otimes>\<^sub>M ) r"
-  also have "map_option fst \<circ> bind_pmfsr r f = T"
-    apply (auto simp: bind_pmfsr_def[abs_def] fun_eq_iff map_option_bind o_def case_prod_unfold)
-    find_theorems map_option Option.bind
 
+context fixes Y :: "'a pmfsr set" begin
 
-lemma spmf_of_pmfsr_return:
-  "spmf_of_pmfsr (return_pmfsr x) = return_spmf x"
-  apply transfer
+definition lub_pmfsr :: "'a pmfsr" where
+  "lub_pmfsr bs = 
+     (let X = {xn |xn r. r \<in> Y \<and> r bs = Some xn}
+      in  if Set.is_singleton X then Some (the_elem X) else None)"
+
+lemma lub_pmfsr_eq_SomeE:
+  assumes "lub_pmfsr bs = Some xn"
+  obtains r where "r \<in> Y" "r bs = Some xn"
+  using assms
+  by (auto simp: lub_pmfsr_def Let_def is_singleton_def split: if_splits)
+
+lemma lub_pmfsr_eq_SomeD:
+  assumes "lub_pmfsr bs = Some xn" "r \<in> Y" "r bs = Some xn'"
+  shows   "xn' = xn"
+proof -
+  let ?X = "{xn |xn r. r \<in> Y \<and> r bs = Some xn}"
+  from assms(1) have "is_singleton ?X"
+    by (auto simp: lub_pmfsr_def Let_def split: if_splits)
+  then obtain xn'' where xn'': "?X = {xn''}"
+    by (auto simp: is_singleton_def)
+  moreover have "xn' \<in> ?X"
+    using assms by auto
+  ultimately show "xn' = xn"
+    using assms unfolding lub_pmfsr_def Let_def xn'' by auto
+qed
 
 end
+
+lemma lub_pmfsr_empty [simp]: "lub_pmfsr {} = (\<lambda>_. None)"
+  by (auto simp: lub_pmfsr_def fun_eq_iff is_singleton_def)
+
+lemma lub_pmfsr_const [simp]: "lub_pmfsr {p} = p"
+proof
+  fix bs :: "bool stream"
+  show "lub_pmfsr {p} bs = p bs"
+  proof (cases "p bs")
+    case None
+    hence *: "{xn |xn r. r \<in> {p} \<and> r bs = Some xn} = {}"
+      by auto
+    show ?thesis
+      unfolding lub_pmfsr_def Let_def * by (auto simp: is_singleton_def None)
+  next
+    case (Some xn)
+    hence *: "{xn |xn r. r \<in> {p} \<and> r bs = Some xn} = {xn}"
+      by auto
+    show ?thesis
+      unfolding lub_pmfsr_def Let_def * by (auto simp: is_singleton_def Some)
+  qed
+qed
+
+
+lemma partial_function_definitions_pmfsr: 
+  "partial_function_definitions ord_pmfsr lub_pmfsr"
+  (is "partial_function_definitions ?R _")
+proof
+  fix x show "?R x x"
+    by (auto simp: ord_pmfsr_def rel_fun_def intro: ord_option_reflI)
+next
+  fix x y z
+  assume "?R x y" "?R y z"
+  with transp_ord_option[OF transp_equality] show "?R x z"
+    unfolding ord_pmfsr_def by (fastforce simp: rel_fun_def transp_def)    
+next
+  fix x y
+  assume "?R x y" "?R y x"
+  thus "x = y"
+    using antisymp_ord_option[of "(=)"]
+    by (fastforce simp: ord_pmfsr_def rel_fun_def antisymp_def)
+next
+  fix Y r
+  assume Y: "Complete_Partial_Order.chain ?R Y" "r \<in> Y"
+  show "?R r (lub_pmfsr Y)"
+    unfolding ord_pmfsr_def rel_fun_def
+  proof safe
+    fix bs :: "bool stream"
+    show "ord_option (=) (r bs) (lub_pmfsr Y bs)"
+    proof (cases "r bs")
+      case None
+      thus ?thesis
+        by auto
+    next
+      case [simp]: (Some xn)
+      have "{xn |xn r. r \<in> Y \<and> r bs = Some xn} = {xn}"
+      proof (intro equalityI subsetI)
+        fix xn' assume "xn' \<in> {xn |xn r. r \<in> Y \<and> r bs = Some xn}"
+        then obtain r' where *: "r' \<in> Y" "r' bs = Some xn'"
+          by auto
+        from Y * have "ord_pmfsr r r' \<or> ord_pmfsr r' r"
+          unfolding Complete_Partial_Order.chain_def by blast
+        hence "ord_option (=) (r bs) (r' bs) \<or> ord_option (=) (r' bs) (r bs)"
+          unfolding ord_pmfsr_def rel_fun_def by blast
+        with * have "xn = xn'"
+          by auto
+        thus "xn' \<in> {xn}"
+          by simp
+      qed (use Y(2) in auto)
+      hence "lub_pmfsr Y bs = Some xn"
+        by (simp add: lub_pmfsr_def)
+      thus ?thesis
+        by simp
+    qed
+  qed
+next
+  fix Y r
+  assume Y: "Complete_Partial_Order.chain ?R Y" and upper: "\<And>r'. r' \<in> Y \<Longrightarrow> ?R r' r"
+  show "?R (lub_pmfsr Y) r"
+    unfolding ord_pmfsr_def rel_fun_def
+  proof safe
+    fix bs :: "bool stream"
+    show "ord_option (=) (lub_pmfsr Y bs) (r bs)"
+    proof (cases "lub_pmfsr Y bs")
+      case None
+      thus ?thesis
+        by auto
+    next
+      case (Some xn)
+      then obtain r' where r': "r' \<in> Y" "r' bs = Some xn"
+        by (elim lub_pmfsr_eq_SomeE)
+      have "?R r' r"
+        by (rule upper) fact+
+      hence "ord_option (=) (r' bs) (r bs)"
+        by (auto simp: ord_pmfsr_def rel_fun_def)
+      with r' Some show ?thesis
+        by auto
+    qed
+  qed
+qed
+
+
+lemma ccpo_pmfsr: "class.ccpo lub_pmfsr ord_pmfsr (mk_less ord_pmfsr)"
+  by (rule ccpo partial_function_definitions_pmfsr)+
+
+interpretation pmfsr: partial_function_definitions "ord_pmfsr" "lub_pmfsr"
+  rewrites "lub_pmfsr {} \<equiv> (\<lambda>_. None)"
+  by (rule partial_function_definitions_pmfsr) simp
+
+declaration \<open>Partial_Function.init "pmfsr" \<^term>\<open>pmfsr.fixp_fun\<close>
+  \<^term>\<open>pmfsr.mono_body\<close> @{thm pmfsr.fixp_rule_uc} @{thm pmfsr.fixp_induct_uc}
+  NONE\<close>
+
+declare pmfsr.leq_refl[simp]
+declare admissible_leI[OF ccpo_pmfsr, cont_intro]
+
+abbreviation "mono_pmfsr \<equiv> monotone (fun_ord ord_pmfsr) ord_pmfsr"
+
+lemma bind_pmfsr_mono':
+  assumes fg: "ord_pmfsr f g"
+  and hk: "\<And>x :: 'a. ord_pmfsr (h x) (k x)"
+  shows "ord_pmfsr (bind_pmfsr f h) (bind_pmfsr g k)"
+  unfolding bind_pmfsr_def using assms
+  apply (auto simp: ord_pmfsr_def rel_fun_def Option_bind_conv_case split: option.splits)
+     apply (metis ord_option_eq_simps(2))
+    apply (metis old.prod.inject option.discI option.sel ord_option_eq_simps(2))
+   apply (metis Pair_inject option.inject ord_option_eq_simps(2))
+  apply (metis fst_conv option.sel ord_option_eq_simps(2) snd_conv)
+  done
+
+lemma bind_pmfsr_mono [partial_function_mono]:
+  assumes mf: "mono_pmfsr B" and mg: "\<And>y. mono_pmfsr (\<lambda>f. C y f)"
+  shows "mono_pmfsr (\<lambda>f. bind_pmfsr (B f) (\<lambda>y. C y f))"
+proof (rule monotoneI)
+  fix f g :: "'a \<Rightarrow> 'b pmfsr"
+  assume fg: "fun_ord ord_pmfsr f g"
+  with mf have "ord_pmfsr (B f) (B g)" by (rule monotoneD[of _ _ _ f g])
+  moreover from mg have "\<And>y'. ord_pmfsr (C y' f) (C y' g)"
+    by (rule monotoneD) (rule fg)
+  ultimately show "ord_pmfsr (bind_pmfsr (B f) (\<lambda>y. C y f)) (bind_pmfsr (B g) (\<lambda>y'. C y' g))"
+    by (rule bind_pmfsr_mono')
+qed
+
+lemma monotone_bind_pmfsr1: "monotone ord_pmfsr ord_pmfsr (\<lambda>y. bind_pmfsr y g)"
+  by (rule monotoneI) (simp add: bind_pmfsr_mono')
+
+lemma monotone_bind_pmfsr2:
+  assumes g: "\<And>x. monotone ord ord_pmfsr (\<lambda>y. g y x)"
+  shows "monotone ord ord_pmfsr (\<lambda>y. bind_pmfsr p (g y))"
+  by (rule monotoneI) (auto intro: bind_pmfsr_mono' monotoneD[OF g])
+
+lemma bind_lub_pmfsr:
+  assumes chain: "Complete_Partial_Order.chain ord_pmfsr Y"
+  shows "bind_pmfsr (lub_pmfsr Y) f = lub_pmfsr ((\<lambda>p. bind_pmfsr p f) ` Y)" (is "?lhs = ?rhs")
+  sorry
+(*
+proof(cases "Y = {}")
+  case Y: False
+  show ?thesis
+  proof(rule spmf_eqI)
+    fix i
+    have chain': "Complete_Partial_Order.chain (\<le>) ((\<lambda>p x. ennreal (spmf p x * spmf (f x) i)) ` Y)"
+      using chain by(rule chain_imageI)(auto simp add: le_fun_def dest: ord_spmf_eq_leD intro: mult_right_mono)
+    have chain'': "Complete_Partial_Order.chain (ord_spmf (=)) ((\<lambda>p. p \<bind> f) ` Y)"
+      using chain by(rule chain_imageI)(auto intro!: monotoneI bind_spmf_mono' ord_spmf_reflI)
+    let ?M = "count_space (set_spmf (lub_spmf Y))"
+    have "ennreal (spmf ?lhs i) = \<integral>\<^sup>+ x. ennreal (spmf (lub_spmf Y) x) * ennreal (spmf (f x) i) \<partial>?M"
+      by(auto simp add: ennreal_spmf_lub_spmf ennreal_spmf_bind nn_integral_measure_spmf')
+    also have "\<dots> = \<integral>\<^sup>+ x. (SUP p\<in>Y. ennreal (spmf p x * spmf (f x) i)) \<partial>?M"
+      by(subst ennreal_spmf_lub_spmf[OF chain Y])(subst SUP_mult_right_ennreal, simp_all add: ennreal_mult Y)
+    also have "\<dots> = (SUP p\<in>Y. \<integral>\<^sup>+ x. ennreal (spmf p x * spmf (f x) i) \<partial>?M)"
+      using Y chain' by(rule nn_integral_monotone_convergence_SUP_countable) simp
+    also have "\<dots> = (SUP p\<in>Y. ennreal (spmf (bind_spmf p f) i))"
+      by(auto simp add: ennreal_spmf_bind nn_integral_measure_spmf nn_integral_count_space_indicator set_lub_spmf[OF chain] in_set_spmf_iff_spmf ennreal_mult intro!: arg_cong [of _ _ Sup] image_cong nn_integral_cong split: split_indicator)
+    also have "\<dots> = ennreal (spmf ?rhs i)" using chain'' by(simp add: ennreal_spmf_lub_spmf Y image_comp)
+    finally show "spmf ?lhs i = spmf ?rhs i" by simp
+  qed
+qed simp
+*)
+
+(*
+lemma map_lub_spmf:
+  "Complete_Partial_Order.chain (ord_spmf (=)) Y
+  \<Longrightarrow> map_spmf f (lub_spmf Y) = lub_spmf (map_spmf f ` Y)"
+unfolding map_spmf_conv_bind_spmf[abs_def] by(simp add: bind_lub_spmf o_def)
+*)
+
+lemma mcont_bind_pmfsr1: "mcont lub_pmfsr ord_pmfsr lub_pmfsr ord_pmfsr (\<lambda>y. bind_pmfsr y f)"
+  using monotone_bind_pmfsr1 by (rule mcontI) (rule contI, simp add: bind_lub_pmfsr)
+
+lemma bind_lub_pmfsr2:
+  assumes chain: "Complete_Partial_Order.chain ord Y"
+  and g: "\<And>y. monotone ord ord_pmfsr (g y)"
+  shows "bind_pmfsr x (\<lambda>y. lub_pmfsr (g y ` Y)) = lub_pmfsr ((\<lambda>p. bind_pmfsr x (\<lambda>y. g y p)) ` Y)"
+  (is "?lhs = ?rhs")
+  sorry
+(*
+proof(cases "Y = {}")
+  case Y: False
+  show ?thesis
+  proof(rule spmf_eqI)
+    fix i
+    have chain': "\<And>y. Complete_Partial_Order.chain (ord_spmf (=)) (g y ` Y)"
+      using chain g[THEN monotoneD] by(rule chain_imageI)
+    have chain'': "Complete_Partial_Order.chain (\<le>) ((\<lambda>p y. ennreal (spmf x y * spmf (g y p) i)) ` Y)"
+      using chain by(rule chain_imageI)(auto simp add: le_fun_def dest: ord_spmf_eq_leD monotoneD[OF g] intro!: mult_left_mono)
+    have chain''': "Complete_Partial_Order.chain (ord_spmf (=)) ((\<lambda>p. bind_spmf x (\<lambda>y. g y p)) ` Y)"
+      using chain by(rule chain_imageI)(rule monotone_bind_spmf2[OF g, THEN monotoneD])
+
+    have "ennreal (spmf ?lhs i) = \<integral>\<^sup>+ y. (SUP p\<in>Y. ennreal (spmf x y * spmf (g y p) i)) \<partial>count_space (set_spmf x)"
+      by(simp add: ennreal_spmf_bind ennreal_spmf_lub_spmf[OF chain'] Y nn_integral_measure_spmf' SUP_mult_left_ennreal ennreal_mult image_comp)
+    also have "\<dots> = (SUP p\<in>Y. \<integral>\<^sup>+ y. ennreal (spmf x y * spmf (g y p) i) \<partial>count_space (set_spmf x))"
+      unfolding nn_integral_measure_spmf' using Y chain''
+      by(rule nn_integral_monotone_convergence_SUP_countable) simp
+    also have "\<dots> = (SUP p\<in>Y. ennreal (spmf (bind_spmf x (\<lambda>y. g y p)) i))"
+      by(simp add: ennreal_spmf_bind nn_integral_measure_spmf' ennreal_mult)
+    also have "\<dots> = ennreal (spmf ?rhs i)" using chain'''
+      by(auto simp add: ennreal_spmf_lub_spmf Y image_comp)
+    finally show "spmf ?lhs i = spmf ?rhs i" by simp
+  qed
+qed simp
+*)
+
+lemma bind_pmfsr_cong:
+  "p = q \<Longrightarrow> (\<And>x. x \<in> range_pmfsr q \<Longrightarrow> f x = g x) \<Longrightarrow> bind_pmfsr p f = bind_pmfsr q g"
+  by (auto simp: bind_pmfsr_def fun_eq_iff Option_bind_conv_case in_range_pmfsrI split: option.splits)
+
+lemma mcont_bind_pmfsr [cont_intro]:
+  assumes f: "mcont luba orda lub_pmfsr ord_pmfsr f"
+  and g: "\<And>y. mcont luba orda lub_pmfsr ord_pmfsr (g y)"
+  shows "mcont luba orda lub_pmfsr ord_pmfsr (\<lambda>x. bind_pmfsr (f x) (\<lambda>y. g y x))"
+proof(rule pmfsr.mcont2mcont'[OF _ _ f])
+  fix z
+  show "mcont lub_pmfsr ord_pmfsr lub_pmfsr ord_pmfsr (\<lambda>x. bind_pmfsr x (\<lambda>y. g y z))"
+    by(rule mcont_bind_pmfsr1)
+next
+  fix x
+  let ?f = "\<lambda>z. bind_pmfsr x (\<lambda>y. g y z)"
+  have "monotone orda ord_pmfsr ?f" using mcont_mono[OF g] by(rule monotone_bind_pmfsr2)
+  moreover have "cont luba orda lub_pmfsr ord_pmfsr ?f"
+  proof(rule contI)
+    fix Y
+    assume chain: "Complete_Partial_Order.chain orda Y" and Y: "Y \<noteq> {}"
+    have "bind_pmfsr x (\<lambda>y. g y (luba Y)) = bind_pmfsr x (\<lambda>y. lub_pmfsr (g y ` Y))"
+      by (rule bind_pmfsr_cong) (simp_all add: mcont_contD[OF g chain Y])
+    also have "\<dots> = lub_pmfsr ((\<lambda>p. bind_pmfsr x (\<lambda>y. g y p)) ` Y)" using chain
+      by (rule bind_lub_pmfsr2)(rule mcont_mono[OF g])
+    finally show "bind_pmfsr x (\<lambda>y. g y (luba Y)) = \<dots>" .
+  qed
+  ultimately show "mcont luba orda lub_pmfsr ord_pmfsr ?f" by(rule mcontI)
+qed
+
+
+lemma map_pmfsr_mono [partial_function_mono]: "mono_pmfsr B \<Longrightarrow> mono_pmfsr (\<lambda>g. map_pmfsr f (B g))"
+  unfolding map_pmfsr_conv_bind_pmfsr by(rule bind_pmfsr_mono) simp_all
+
+lemma mcont_map_pmfsr [cont_intro]:
+  "mcont luba orda lub_pmfsr ord_pmfsr g
+  \<Longrightarrow> mcont luba orda lub_pmfsr ord_pmfsr (\<lambda>x. map_pmfsr f (g x))"
+  unfolding map_pmfsr_conv_bind_pmfsr by (rule mcont_bind_pmfsr) simp_all
+
+
+lemma monotone_set_pmfsr: "monotone ord_pmfsr (\<subseteq>) range_pmfsr"
+  apply (rule monotoneI)
+  apply (auto simp: ord_pmfsr_def rel_fun_def range_pmfsr_def)
+  by (metis in_range_pmfsrI ord_option_eq_simps(2) range_pmfsr_def)
+
+lemma cont_set_pmfsr: "cont lub_pmfsr ord_pmfsr Union (\<subseteq>) range_pmfsr"
+  apply (rule contI)
+  apply (auto simp: ord_pmfsr_def rel_fun_def range_pmfsr_def)
+   apply (metis in_range_pmfsrI lub_pmfsr_eq_SomeE range_pmfsr_def)
+  oops
+
+
+lemma mcont2mcont_set_pmfsr[THEN mcont2mcont, cont_intro]:
+  shows mcont_set_pmfsr: "mcont lub_pmfsr ord_pmfsr Union (\<subseteq>) range_pmfsr"
+  oops
+(*
+by(rule mcontI monotone_set_pmfsr cont_set_pmfsr)+
+*)
+
+code_lazy_type stream
+
+partial_function (pmfsr) bernoulli_pmfsr :: "real \<Rightarrow> bool pmfsr" where
+  "bernoulli_pmfsr p =
+     do {b \<leftarrow> coin_pmfsr;
+         if b then
+           return_pmfsr (p \<ge> 1/2)
+         else
+           bernoulli_pmfsr (if p < 1/2 then 2 * p else 2 * p - 1)}"
+
+lemmas [code] = bernoulli_pmfsr.simps
+
+value "bernoulli_pmfsr (1/3) (replicate 3 False @- sconst True)"
+
+(*
+definition geometric_pmfsr where
+  "geometric_pmfsr = 
+*)
+
+partial_function (pmfsr) geometric_pmfsr :: "unit \<Rightarrow> nat pmfsr" where
+  "geometric_pmfsr x =
+     do {b \<leftarrow> coin_pmfsr;
+         if b then return_pmfsr 0 else map_pmfsr Suc (geometric_pmfsr ())}"
+
+lemmas [code] = geometric_pmfsr.simps
+
+value "geometric_pmfsr () (replicate 3 False @- sconst True)"
+
+
+context
+  fixes n :: nat
+begin
+
+partial_function (pmfsr) fast_dice_roll :: "nat \<Rightarrow> nat \<Rightarrow> nat pmfsr"
+where
+  "fast_dice_roll v c = 
+  (if v \<ge> n then if c < n then return_pmfsr c else fast_dice_roll (v - n) (c - n)
+   else do {
+     b \<leftarrow> coin_pmfsr;
+     fast_dice_roll (2 * v) (2 * c + (if b then 1 else 0)) } )"
+
+definition fast_uniform :: "nat pmfsr"
+  where "fast_uniform = fast_dice_roll 1 0"
+
+end
+
+lemmas [code] = fast_dice_roll.simps
+
+value "fast_uniform 10 ([True, False, True, True, False] @- sconst False)"
+value "fast_uniform 10 ([False, False, True, True, False] @- sconst False)"
+value "fast_uniform 10 ([True, False, True, False, False] @- sconst False)"
+value "fast_uniform 10 ([True, False, True, True, True] @- sconst False)"
+value "fast_uniform 10 ([True, False, True, True, False, True, True, False, True] @- sconst False)"
+value "fast_uniform 10 ([True, True, True, True, True, True, False, True, True] @- sconst False)"
+
 
 end
