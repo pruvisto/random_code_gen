@@ -1074,6 +1074,17 @@ definition lub_pmfsr :: "'a pmfsr" where
      (let X = {xn |xn r. r \<in> Y \<and> r bs = Some xn}
       in  if Set.is_singleton X then Some (the_elem X) else None)"
 
+lemma lub_pmfsr_eq_SomeI:
+  assumes "r \<in> Y" "r bs = Some xn"
+  assumes "\<And>r' xn'. r' \<in> Y \<Longrightarrow> r' bs = Some xn' \<Longrightarrow> xn' = xn"
+  shows   "lub_pmfsr bs = Some xn"
+proof -
+  have *: "{xn |xn r. r \<in> Y \<and> r bs = Some xn} = {xn}"
+    using assms by blast
+  show ?thesis
+    unfolding Let_def lub_pmfsr_def * by auto
+qed
+
 lemma lub_pmfsr_eq_SomeE:
   assumes "lub_pmfsr bs = Some xn"
   obtains r where "r \<in> Y" "r bs = Some xn"
@@ -1096,6 +1107,32 @@ proof -
 qed
 
 end
+
+lemma wf_lub_pmfsr:
+  assumes "Complete_Partial_Order.chain ord_pmfsr Y" "\<And>r. r \<in> Y \<Longrightarrow> wf_pmfsr r"
+  shows   "wf_pmfsr (lub_pmfsr Y)"
+proof (rule wf_pmfsrI)
+  fix bs bs' x n
+  assume *: "lub_pmfsr Y bs = Some (x, n)" "stake n bs' = stake n bs"
+  from *(1) obtain r where r: "r \<in> Y" "r bs = Some (x, n)"
+    by (auto elim!: lub_pmfsr_eq_SomeE)
+  show "lub_pmfsr Y bs' = Some (x, n)"
+  proof (rule lub_pmfsr_eq_SomeI)
+    show "r \<in> Y"
+      by fact
+    show "r bs' = Some (x, n)"
+      by (rule wf_pmfsrD[where bs = bs]) (use assms r * in auto)
+    fix r' xn'
+    assume r': "r' \<in> Y" "r' bs' = Some xn'"
+    have "ord_pmfsr r' r \<or> ord_pmfsr r r'"
+      using assms r r' by (auto simp: Complete_Partial_Order.chain_def)
+    hence "ord_option (=) (r' bs') (r bs') \<or> ord_option (=) (r bs') (r' bs')"
+      by (auto simp: ord_pmfsr_def rel_fun_def)
+    thus "xn' = (x, n)"
+      using \<open>r bs' = Some (x, n)\<close> r' by (cases "r' bs'") auto
+  qed
+qed    
+
 
 lemma lub_pmfsr_empty [simp]: "lub_pmfsr {} = (\<lambda>_. None)"
   by (auto simp: lub_pmfsr_def fun_eq_iff is_singleton_def)
