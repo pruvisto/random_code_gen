@@ -245,6 +245,9 @@ definition wf_pmfsr :: "'a pmfsr \<Rightarrow> bool" where
      (\<forall>bs. case p bs of None \<Rightarrow> True | Some (x, n) \<Rightarrow>
        (\<forall>bs'. stake n bs' = stake n bs \<longrightarrow> p bs' = p bs))"
 
+lemma wf_pmfsr_const_None [simp, intro]: "wf_pmfsr (\<lambda>_. None)"
+  by (auto simp: wf_pmfsr_def)
+
 
 (*
 definition wf_pmfsr :: "'a pmfsr \<Rightarrow> bool" where
@@ -443,6 +446,10 @@ definition bind_pmfsr :: "'a pmfsr \<Rightarrow> ('a \<Rightarrow> 'b pmfsr) \<R
   "bind_pmfsr r f bs =
      do {(x, m) \<leftarrow> r bs; (y, n) \<leftarrow> f x (sdrop m bs); Some (y, m + n)}"
 
+definition consumption_pmfsr :: "'a pmfsr \<Rightarrow> nat pmfsr" where
+  "consumption_pmfsr r bs = map_option (\<lambda>(_, n). (n, n)) (r bs)"
+
+
 adhoc_overloading Monad_Syntax.bind bind_pmfsr
 
 definition map_pmfsr :: "('a \<Rightarrow> 'b) \<Rightarrow> 'a pmfsr \<Rightarrow> 'b pmfsr" where
@@ -455,6 +462,9 @@ lemma map_pmfsr_id [simp]: "map_pmfsr id r = r"
 lemma map_pmfsr_id' [simp]: "map_pmfsr (\<lambda>x. x) r = r"
   by (auto simp: fun_eq_iff map_pmfsr_def return_pmfsr_def Option_bind_conv_case map_option_case
            split: option.splits)
+
+lemma map_pmfsr_return [simp]: "map_pmfsr f (return_pmfsr x) = return_pmfsr (f x)"
+  by (auto simp: map_pmfsr_def return_pmfsr_def)
 
 lemma map_pmfsr_comp: "map_pmfsr (f \<circ> g) r = map_pmfsr f (map_pmfsr g r)"
   by (auto simp: fun_eq_iff map_pmfsr_def return_pmfsr_def Option_bind_conv_case map_option_case
@@ -476,7 +486,9 @@ lemma bind_assoc_pmfsr: "(A :: 'a pmfsr) \<bind> B \<bind> C = A \<bind> (\<lamb
   by (auto simp: fun_eq_iff bind_pmfsr_def return_pmfsr_def Option_bind_conv_case
            split: option.splits)  
 
-
+lemma bind_pmfsr_cong:
+  "p = q \<Longrightarrow> (\<And>x. x \<in> range_pmfsr q \<Longrightarrow> f x = g x) \<Longrightarrow> bind_pmfsr p f = bind_pmfsr q g"
+  by (auto simp: bind_pmfsr_def fun_eq_iff Option_bind_conv_case in_range_pmfsrI split: option.splits)
 
 
 lemma range_return_pmfsr [simp]: "range_pmfsr (return_pmfsr x) = {x}"
@@ -507,6 +519,16 @@ proof -
     by (auto simp: wf_pmfsr_def coin_pmfsr_def)
   ultimately show ?thesis
     unfolding wf_pmfsr_def coin_pmfsr_def range_pmfsr_def by auto
+qed
+
+lemma wf_consumption_pmfsr:
+  assumes "wf_pmfsr r"
+  shows   "wf_pmfsr (consumption_pmfsr r)"
+proof (rule wf_pmfsrI)
+  fix bs bs' x n
+  assume "consumption_pmfsr r bs = Some (x, n)" "stake n bs' = stake n bs"
+  thus "consumption_pmfsr r bs' = Some (x, n)"
+    unfolding consumption_pmfsr_def using assms by (auto dest: wf_pmfsrD)
 qed
 
 lemma range_bind_pmfsr_subset:
@@ -561,6 +583,24 @@ next
   qed
 qed
 
+lemma range_map_pmfsr: "range_pmfsr (map_pmfsr f r) = f ` range_pmfsr r"
+proof safe
+  fix y assume "y \<in> range_pmfsr (map_pmfsr f r)"
+  then obtain n bs where bs: "Some (y, n) = map_option (map_prod f id) (r bs)"
+    unfolding map_pmfsr_def range_pmfsr_def by auto
+  then obtain x where x: "r bs = Some (x, n)" "y = f x"
+    by (cases "r bs") auto
+  thus "y \<in> f ` range_pmfsr r"
+    by (auto simp: x bs intro!: imageI intro: in_range_pmfsrI[of _ bs _ n])
+next
+  fix x assume "x \<in> range_pmfsr r"
+  then obtain bs n where "r bs = Some (x, n)"
+    by (auto simp: range_pmfsr_def eq_commute)
+  thus "f x \<in> range_pmfsr (map_pmfsr f r)"
+    by (intro in_range_pmfsrI[of _ bs _ n]) (auto simp: map_pmfsr_def)
+qed
+  
+
 lemma wf_bind_pmfsr:
   assumes "wf_pmfsr r"
   assumes "\<And>x. x \<in> range_pmfsr r \<Longrightarrow> wf_pmfsr (f x)"
@@ -598,6 +638,12 @@ proof -
   qed
 qed
 
+lemma wf_map_pmfsr:
+  assumes "wf_pmfsr r"
+  shows   "wf_pmfsr (map_pmfsr f r)"
+  using assms unfolding map_pmfsr_conv_bind_pmfsr
+  by (intro wf_bind_pmfsr wf_return_pmfsr)
+
 
 lemma null_sets_return: "null_sets (return M x) = {X\<in>sets M. x \<notin> X}"
   by (auto simp: null_sets_def)
@@ -623,8 +669,8 @@ lemma (in prob_space) distr_stream_space_shd [simp]:
 definition loss_pmfsr :: "'a pmfsr \<Rightarrow> real" where
   "loss_pmfsr r = coin_space.prob (r -` {None})"
 
-definition run_pmfsr :: "'a pmfsr \<Rightarrow> bool stream \<Rightarrow> ('a \<times> bool stream) option" where
-  "run_pmfsr p bs = map_option (\<lambda>(x,n). (x, sdrop n bs)) (p bs)"
+definition run_pmfsr' :: "'a pmfsr \<Rightarrow> bool stream \<Rightarrow> ('a \<times> bool stream) option" where
+  "run_pmfsr' p bs = map_option (\<lambda>(x,n). (x, sdrop n bs)) (p bs)"
 
 definition measure_pmfsr :: "'a pmfsr \<Rightarrow> 'a option measure" where
   "measure_pmfsr p = distr coin_space (count_space UNIV) (map_option fst \<circ> p)"
@@ -633,7 +679,7 @@ definition pmfsr_space :: "('a \<times> bool stream) option measure" where
   "pmfsr_space = option_measure (count_space UNIV \<Otimes>\<^sub>M coin_space)"
 
 definition measure_pmfsr' :: "'a pmfsr \<Rightarrow> ('a \<times> bool stream) option measure" where
-  "measure_pmfsr' p = distr coin_space pmfsr_space (run_pmfsr p)"
+  "measure_pmfsr' p = distr coin_space pmfsr_space (run_pmfsr' p)"
 
 lemma stream_eqI: "(\<And>n. snth s n = snth s' n) \<Longrightarrow> s = s'"
 proof (coinduction arbitrary: s s')
@@ -757,14 +803,14 @@ proof -
       sorry
     let ?M = "distr coin_space (count_space UNIV) (map_option fst \<circ> p)"
 
-    have "emeasure (measure_pmfsr' p) X = emeasure coin_space (run_pmfsr p -` X)"
+    have "emeasure (measure_pmfsr' p) X = emeasure coin_space (run_pmfsr' p -` X)"
       unfolding measure_pmfsr'_def using X
       apply (subst emeasure_distr)
         apply (auto simp: space_coin_space)
       sorry
     also have "\<dots> = emeasure coin_space
                       ((\<lambda>bs. map_option (\<lambda>(x, n). (x, sdrop n bs)) (p bs)) -` Some ` ({x} \<times> Y))"
-      unfolding run_pmfsr_def X_def ..
+      unfolding run_pmfsr'_def X_def ..
     also have "(\<lambda>bs. map_option (\<lambda>(x, n). (x, sdrop n bs)) (p bs)) -` Some ` ({x} \<times> Y) =
                {bs |bs n. p bs = Some (x, n) \<and> sdrop n bs \<in> Y}"
       by (auto simp: map_option_case inj_image_mem_iff split: option.splits)
@@ -878,7 +924,7 @@ lemma measure_pmfsr_conv_measure_pmfsr':
     defer
     defer
   apply (rule arg_cong[of _ _ "distr coin_space (count_space UNIV)"])
-    apply (auto simp: run_pmfsr_def fun_eq_iff map_option_case split: option.splits)
+    apply (auto simp: run_pmfsr'_def fun_eq_iff map_option_case split: option.splits)
   sorry
 
 
@@ -936,7 +982,7 @@ proof -
     apply (subst distr_distr)
     prefer 3
     apply (rule arg_cong[of _ _ "distr coin_space (count_space UNIV)"])
-      apply (auto simp: o_def fun_eq_iff run_pmfsr_def split: option.splits)
+      apply (auto simp: o_def fun_eq_iff run_pmfsr'_def split: option.splits)
     sorry
   also have "\<dots> = measure_pmfsr (bind_pmfsr r f)"
     unfolding measure_pmfsr_def bind_pmfsr_def
@@ -996,7 +1042,24 @@ qed
 
 end
 
-lemma spmf_of_return_pmfsr:
+lemma loss_pmfsr_altdef:
+  assumes "wf_pmfsr r"
+  shows   "loss_pmfsr r = pmf (spmf_of_pmfsr r) None"
+proof -
+  have "(map_option fst \<circ> r) -` {None} = r -` {None}"
+    by auto
+  moreover have "coin_space.random_variable (count_space UNIV) (map_option fst \<circ> r)"
+    by (intro measurable_comp[OF measurable_pmfsr] assms) auto
+  ultimately show ?thesis
+    using assms
+    by (auto simp: loss_pmfsr_def pmf.rep_eq spmf_of_pmfsr.rep_eq measure_pmfsr_def 
+                   measure_distr space_coin_space)
+qed
+
+lemma weight_pmfsr: "wf_pmfsr r \<Longrightarrow> weight_spmf (spmf_of_pmfsr r) = 1 - loss_pmfsr r"
+  by (simp add: weight_spmf_conv_pmf_None loss_pmfsr_altdef)
+
+lemma spmf_of_return_pmfsr [simp]:
   "spmf_of_pmfsr (return_pmfsr x) = return_spmf x"
 proof -
   have "measure_pmf (spmf_of_pmfsr (return_pmfsr x)) =
@@ -1012,7 +1075,10 @@ proof -
     using measure_pmf_inject by auto
 qed
 
-lemma spmf_of_coin_pmfsr:
+lemma loss_return_pmfsr [simp]: "loss_pmfsr (return_pmfsr x) = 0"
+  by (simp add: loss_pmfsr_altdef wf_return_pmfsr)
+
+lemma spmf_of_coin_pmfsr [simp]:
   "spmf_of_pmfsr coin_pmfsr = coin_spmf"
 proof -
   have "measure_pmf (spmf_of_pmfsr coin_pmfsr) =
@@ -1033,6 +1099,9 @@ proof -
   finally show ?thesis
     using measure_pmf_inject by auto
 qed
+
+lemma loss_coin_pmfsr [simp]: "loss_pmfsr coin_pmfsr = 0"
+  by (simp add: loss_pmfsr_altdef wf_coin_pmfsr)
 
 lemma spmf_of_bind_pmfsr:
   assumes "wf_pmfsr r"
@@ -1061,11 +1130,75 @@ proof -
     using measure_pmf_inject by auto
 qed
 
+lemma set_spmf_of_pmfsr:
+  assumes  "wf_pmfsr r"
+  shows    "set_spmf (spmf_of_pmfsr r) \<subseteq> range_pmfsr r"
+proof -
+  have "x \<notin> set_spmf (spmf_of_pmfsr r)" if "x \<notin> range_pmfsr r" for x
+  proof -
+    have "spmf (spmf_of_pmfsr r) x = Sigma_Algebra.measure (measure_pmfsr r) {Some x}"
+      unfolding pmf.rep_eq spmf_of_pmfsr.rep_eq using assms by auto
+    also have "\<dots> = coin_space.prob ((map_option fst \<circ> r) -` {Some x})"
+      unfolding measure_pmfsr_def
+      by (subst measure_distr)
+         (auto intro: measurable_comp[OF measurable_pmfsr[OF assms]] simp: space_coin_space)
+    also have "(map_option fst \<circ> r) -` {Some x} = {}"
+      using \<open>x \<notin> range_pmfsr r\<close> in_range_pmfsrI[of r _ x] by fastforce
+    finally have "spmf (spmf_of_pmfsr r) x = 0"
+      by simp
+    thus "x \<notin> set_spmf (spmf_of_pmfsr r)"
+      by (simp add: spmf_eq_0_set_spmf)
+  qed
+  thus ?thesis
+    by blast
+qed
+
+lemma loss_bind_pmfsr:
+  assumes "wf_pmfsr r"
+  assumes "\<And>x. x \<in> range_pmfsr r \<Longrightarrow> wf_pmfsr (f x)" 
+  shows   "loss_pmfsr (bind_pmfsr r f) = loss_pmfsr r +
+             (LINT x|measure_spmf (spmf_of_pmfsr r). loss_pmfsr (f x))"
+proof -
+  have "loss_pmfsr (bind_pmfsr r f) = pmf (spmf_of_pmfsr (r \<bind> f)) None"
+    by (subst loss_pmfsr_altdef) (auto intro!: wf_bind_pmfsr assms)
+  also have "spmf_of_pmfsr (r \<bind> f) = spmf_of_pmfsr r \<bind> (spmf_of_pmfsr \<circ> f)"
+    by (rule spmf_of_bind_pmfsr) (auto intro!: assms)
+  also have "pmf \<dots> None = loss_pmfsr r +
+               (LINT x|measure_spmf (spmf_of_pmfsr r). pmf (spmf_of_pmfsr (f x)) None)"
+    by (subst pmf_bind_spmf_None) (auto simp: assms loss_pmfsr_altdef o_def)
+  also have "(LINT x|measure_spmf (spmf_of_pmfsr r). pmf (spmf_of_pmfsr (f x)) None) =
+             (LINT x|measure_spmf (spmf_of_pmfsr r). loss_pmfsr (f x))"
+  proof (intro Bochner_Integration.integral_cong_AE)
+    have "AE x in measure_spmf (spmf_of_pmfsr r). x \<in> set_spmf (spmf_of_pmfsr r)"
+      using AE_measure_spmf_iff by blast
+    hence "AE x in measure_spmf (spmf_of_pmfsr r). x \<in> range_pmfsr r"
+      by eventually_elim (use assms(1) set_spmf_of_pmfsr in blast)
+    thus "AE x in measure_spmf (spmf_of_pmfsr r).
+            pmf (spmf_of_pmfsr (f x)) None = loss_pmfsr (f x)"
+      by eventually_elim (auto simp: loss_pmfsr_altdef assms)
+  qed auto
+  finally show ?thesis .
+qed
+
+lemma spmf_of_map_pmfsr:
+  assumes "wf_pmfsr r"
+  shows   "spmf_of_pmfsr (map_pmfsr f r) = map_spmf f (spmf_of_pmfsr r)"
+  using assms
+  by (simp add: map_pmfsr_conv_bind_pmfsr spmf_of_bind_pmfsr wf_return_pmfsr 
+                o_def map_spmf_conv_bind_spmf)
+
+lemma loss_map_pmfsr [simp]: "loss_pmfsr (map_pmfsr f r) = loss_pmfsr r"
+proof -
+  have "map_pmfsr f r -` {None} = r -` {None}"
+    by (auto simp: map_pmfsr_def)
+  thus ?thesis
+    by (simp add: loss_pmfsr_def)
+qed
+
+
 
 definition ord_pmfsr :: "'a pmfsr \<Rightarrow> 'a pmfsr \<Rightarrow> bool" where
   "ord_pmfsr = rel_fun (=) (ord_option (=))"
-
-
 
 context fixes Y :: "'a pmfsr set" begin
 
@@ -1156,7 +1289,6 @@ proof
   qed
 qed
 
-
 lemma partial_function_definitions_pmfsr: 
   "partial_function_definitions ord_pmfsr lub_pmfsr"
   (is "partial_function_definitions ?R _")
@@ -1234,13 +1366,200 @@ next
   qed
 qed
 
-
 lemma ccpo_pmfsr: "class.ccpo lub_pmfsr ord_pmfsr (mk_less ord_pmfsr)"
   by (rule ccpo partial_function_definitions_pmfsr)+
 
 interpretation pmfsr: partial_function_definitions "ord_pmfsr" "lub_pmfsr"
   rewrites "lub_pmfsr {} \<equiv> (\<lambda>_. None)"
   by (rule partial_function_definitions_pmfsr) simp
+
+
+
+typedef 'a pmfs = "{r :: 'a pmfsr. wf_pmfsr r}"
+proof -
+  obtain x :: 'a where True
+    by auto
+  show "\<exists>r::'a pmfsr. r \<in> {r. wf_pmfsr r}"
+    by (rule exI[of _ "return_pmfsr x"]) (auto intro: wf_return_pmfsr)
+qed
+
+setup_lifting type_definition_pmfs
+
+lift_definition run_pmfs :: "'a pmfs \<Rightarrow> bool stream \<Rightarrow> 'a option" is
+  "\<lambda>r bs. map_option fst (r bs)" .
+
+lift_definition run_pmfs' :: "'a pmfs \<Rightarrow> bool stream \<Rightarrow> ('a \<times> nat) option" is
+  "\<lambda>r. r" .
+
+lift_definition return_pmfs :: "'a \<Rightarrow> 'a pmfs" is return_pmfsr
+  by (rule wf_return_pmfsr)
+
+lift_definition coin_pmfs :: "bool pmfs" is coin_pmfsr
+  by (rule wf_coin_pmfsr)
+
+lift_definition bind_pmfs :: "'a pmfs \<Rightarrow> ('a \<Rightarrow> 'b pmfs) \<Rightarrow> 'b pmfs" is bind_pmfsr
+  by (rule wf_bind_pmfsr)
+
+lift_definition loss_pmfs :: "'a pmfs \<Rightarrow> real" is loss_pmfsr .
+
+lift_definition consumption_pmfs :: "'a pmfs \<Rightarrow> nat pmfs" is consumption_pmfsr
+  by (rule wf_consumption_pmfsr)
+
+
+adhoc_overloading Monad_Syntax.bind bind_pmfs
+
+lift_definition map_pmfs :: "('a \<Rightarrow> 'b) \<Rightarrow> 'a pmfs \<Rightarrow> 'b pmfs" is map_pmfsr
+  by (rule wf_map_pmfsr)
+
+lift_definition range_pmfs :: "'a pmfs \<Rightarrow> 'a set" is range_pmfsr .
+
+lift_definition spmf_of_pmfs :: "'a pmfs \<Rightarrow> 'a spmf" is spmf_of_pmfsr .
+
+lift_definition bot_pmfs :: "'a pmfs" is "\<lambda>_. None" by auto
+
+primrec replicate_pmfs :: "nat \<Rightarrow> 'a pmfs \<Rightarrow> 'a list pmfs" where
+  "replicate_pmfs 0 r = return_pmfs []"
+| "replicate_pmfs (Suc n) r = do {x \<leftarrow> r; map_pmfs (\<lambda>xs. x # xs) (replicate_pmfs n r)}"
+
+lemma map_pmfs_id [simp]: "map_pmfs id r = r"
+  by transfer (rule map_pmfsr_id)
+
+lemma map_pmfs_id' [simp]: "map_pmfs (\<lambda>x. x) r = r"
+  by transfer (rule map_pmfsr_id')
+
+lemma map_pmfs_return [simp]: "map_pmfs f (return_pmfs x) = return_pmfs (f x)"
+  by transfer auto
+
+lemma map_pmfs_comp: "map_pmfs (f \<circ> g) r = map_pmfs f (map_pmfs g r)"
+  by transfer (rule map_pmfsr_comp)
+
+lemma map_pmfs_conv_bind_pmfs: "map_pmfs f r = bind_pmfs r (\<lambda>x. return_pmfs (f x))"
+  by transfer (rule map_pmfsr_conv_bind_pmfsr)
+
+lemma bind_return_pmfs': "bind_pmfs r return_pmfs = r"
+  by transfer (rule bind_return_pmfsr')
+
+lemma bind_return_pmfs: "bind_pmfs (return_pmfs x) r = r x"
+  by transfer (rule bind_return_pmfsr)
+
+lemma bind_assoc_pmfs: "(A :: 'a pmfs) \<bind> B \<bind> C = A \<bind> (\<lambda>x. B x \<bind> C)"
+  by transfer (rule bind_assoc_pmfsr)  
+
+lemma bind_pmfs_cong:
+   "r = r' \<Longrightarrow> (\<And>x. x \<in> range_pmfs r \<Longrightarrow> f x = f' x) \<Longrightarrow> bind_pmfs r f = bind_pmfs r' f'"
+  by transfer (use bind_pmfsr_cong in blast)
+
+lemma replicate_pmfs_1 [simp]: "replicate_pmfs (Suc 0) r = map_pmfs (\<lambda>x. [x]) r"
+  by (simp add: bind_return_pmfs' flip: map_pmfs_conv_bind_pmfs)
+
+lemma weight_pmfs: "weight_spmf (spmf_of_pmfs r) = 1 - loss_pmfs r"
+  by transfer (simp add: weight_pmfsr)
+
+lemma loss_pmfs_altdef: "loss_pmfs r = pmf (spmf_of_pmfs r) None"
+  by transfer (auto simp: loss_pmfsr_altdef)
+
+lemma loss_pmfs_01: "loss_pmfs r \<in> {0..1}"
+  unfolding loss_pmfs_altdef by (simp add: pmf_le_1)
+
+
+lemma spmf_of_return_pmfs [simp]: "spmf_of_pmfs (return_pmfs x) = return_spmf x"
+  by transfer simp
+
+lemma spmf_of_coin_pmfs [simp]: "spmf_of_pmfs coin_pmfs = coin_spmf"
+  by transfer simp
+
+lemma spmf_of_bind_pmfs [simp]: "spmf_of_pmfs (r \<bind> f) = spmf_of_pmfs r \<bind> (spmf_of_pmfs \<circ> f)"
+  by transfer (simp add: spmf_of_bind_pmfsr)
+
+lemma spmf_of_map_pmfs [simp]: "spmf_of_pmfs (map_pmfs f r) = map_spmf f (spmf_of_pmfs r)"
+  by transfer (simp add: spmf_of_map_pmfsr)
+
+definition replicate_spmf where "replicate_spmf n p = map_pmf those (replicate_pmf n p)"
+
+lemma replicate_spmf_0 [simp]: "replicate_spmf 0 p = return_spmf []"
+  by (auto simp: replicate_spmf_def)
+
+lemma replicate_spmf_Suc [simp]:
+  "replicate_spmf (Suc n) p = do {x \<leftarrow> p; map_spmf (\<lambda>xs. x # xs) (replicate_spmf n p)}"
+  by (auto simp: replicate_spmf_def map_bind_pmf bind_spmf_def pmf.map_comp o_def
+           intro!: bind_pmf_cong split: option.splits simp flip: map_pmf_def)
+
+lemma spmf_of_replicate_pmfs [simp]:
+  "spmf_of_pmfs (replicate_pmfs n r) = replicate_spmf n (spmf_of_pmfs r)"
+  by (induction n) (auto simp: o_def)
+
+
+lemma loss_return_pmfs [simp]: "loss_pmfs (return_pmfs x) = 0"
+  by transfer auto
+
+lemma loss_coin_pmfs [simp]: "loss_pmfs (coin_pmfs ) = 0"
+  by transfer auto
+
+lemma loss_bind_pmfs:
+  "loss_pmfs (r \<bind> f) = loss_pmfs r + (LINT x|measure_spmf (spmf_of_pmfs r). loss_pmfs (f x))"
+  by transfer (auto simp: loss_bind_pmfsr)
+
+lemma loss_map_pmfs [simp]: "loss_pmfs (map_pmfs f r) = loss_pmfs r"
+  by transfer auto
+
+lemma loss_replicate_pmfs: "loss_pmfs (replicate_pmfs n r) = 1 - (1 - loss_pmfs r) ^ n"
+proof (induction n)
+  case (Suc n)
+  show "loss_pmfs (replicate_pmfs (Suc n) r) = 1 - (1 - loss_pmfs r) ^ Suc n"
+    by (simp add: Suc loss_bind_pmfs weight_pmfs algebra_simps)
+qed auto
+
+
+lift_definition ord_pmfs :: "'a pmfs \<Rightarrow> 'a pmfs \<Rightarrow> bool" is ord_pmfsr .
+
+lift_definition lub_pmfs :: "'a pmfs set \<Rightarrow> 'a pmfs" is
+  "\<lambda>X. if Complete_Partial_Order.chain ord_pmfsr X then lub_pmfsr X else (\<lambda>_. None)"
+  by (auto intro: wf_lub_pmfsr)
+
+lemma lub_pmfs_empty [simp]: "lub_pmfs {} = bot_pmfs"
+  by transfer auto
+
+lemma lub_pmfs_const [simp]: "lub_pmfs {r} = r"
+  by transfer (auto simp: Complete_Partial_Order.chain_def pmfsr.leq_refl)
+
+lemma bot_pmfs_is_least [simp, intro]: "ord_pmfs bot_pmfs r"
+  by transfer (auto simp: ord_pmfsr_def)
+
+lemma partial_function_definitions_pmfs: 
+  "partial_function_definitions ord_pmfs lub_pmfs"
+  (is "partial_function_definitions ?R _")
+proof
+  fix x show "?R x x"
+    by transfer (rule pmfsr.leq_refl)
+next
+  fix x y z
+  assume "?R x y" "?R y z"
+  thus "?R x z"
+    by transfer (rule pmfsr.leq_trans)    
+next
+  fix x y
+  assume "?R x y" "?R y x"
+  thus "x = y"
+    by transfer (rule pmfsr.leq_antisym)
+next
+  fix Y r
+  assume "Complete_Partial_Order.chain ?R Y" "r \<in> Y"
+  thus "?R r (lub_pmfs Y)"
+    by transfer (use pmfsr.lub_upper in auto)
+next
+  fix Y r
+  assume "Complete_Partial_Order.chain ?R Y" "\<And>r'. r' \<in> Y \<Longrightarrow> ?R r' r"
+  thus "?R (lub_pmfs Y) r"
+    by transfer (use pmfsr.lub_least in auto)
+qed
+
+lemma ccpo_pmfs: "class.ccpo lub_pmfs ord_pmfs (mk_less ord_pmfs)"
+  by (rule ccpo partial_function_definitions_pmfs)+
+
+interpretation pmfs: partial_function_definitions "ord_pmfs" "lub_pmfs"
+  rewrites "lub_pmfs {} \<equiv> bot_pmfs"
+  by (rule partial_function_definitions_pmfs) simp
+
 
 declaration \<open>Partial_Function.init "pmfsr" \<^term>\<open>pmfsr.fixp_fun\<close>
   \<^term>\<open>pmfsr.mono_body\<close> @{thm pmfsr.fixp_rule_uc} @{thm pmfsr.fixp_induct_uc}
@@ -1356,10 +1675,6 @@ proof(cases "Y = {}")
 qed simp
 *)
 
-lemma bind_pmfsr_cong:
-  "p = q \<Longrightarrow> (\<And>x. x \<in> range_pmfsr q \<Longrightarrow> f x = g x) \<Longrightarrow> bind_pmfsr p f = bind_pmfsr q g"
-  by (auto simp: bind_pmfsr_def fun_eq_iff Option_bind_conv_case in_range_pmfsrI split: option.splits)
-
 lemma mcont_bind_pmfsr [cont_intro]:
   assumes f: "mcont luba orda lub_pmfsr ord_pmfsr f"
   and g: "\<And>y. mcont luba orda lub_pmfsr ord_pmfsr (g y)"
@@ -1414,60 +1729,473 @@ lemma mcont2mcont_set_pmfsr[THEN mcont2mcont, cont_intro]:
 by(rule mcontI monotone_set_pmfsr cont_set_pmfsr)+
 *)
 
-code_lazy_type stream
 
-partial_function (pmfsr) bernoulli_pmfsr :: "real \<Rightarrow> bool pmfsr" where
-  "bernoulli_pmfsr p =
-     do {b \<leftarrow> coin_pmfsr;
-         if b then
-           return_pmfsr (p \<ge> 1/2)
-         else
-           bernoulli_pmfsr (if p < 1/2 then 2 * p else 2 * p - 1)}"
-
-lemmas [code] = bernoulli_pmfsr.simps
-
-value "bernoulli_pmfsr (1/3) (replicate 3 False @- sconst True)"
 
 (*
-definition geometric_pmfsr where
-  "geometric_pmfsr = 
+  NB: if a recursively defined sampler (PMFS) is lossless, then due to the monotonicity of
+  spmf_of_pmfs, the SPMF defined by the equivalent recurrence is unique, lossless, and equals the 
+  one generated by the sampler.
+
+  At least I think so.
+*)
+lemma ord_spmf_eq_and_weight_spmf_1_imp_eq:
+  assumes "ord_spmf (=) p q" and "weight_spmf p = 1"
+  shows   "p = q"
+proof (rule pmf_eqI)
+  fix x :: "'a option"
+  show "pmf p x = pmf q x"
+  proof (cases x)
+    case None
+    thus ?thesis
+      using assms apply (simp add: pmf_None_eq_weight_spmf)
+      by (metis ennreal_le_iff measure_nonneg measure_spmf.emeasure_eq_measure 
+                measure_spmf.subprob_measure_le_1 ord_spmf_eqD_emeasure order_antisym_conv
+                space_measure_spmf)
+  next
+    case [simp]: (Some y)
+    show ?thesis
+      using assms
+      apply auto
+      by (smt (verit) ord_option.cases pmf.rel_eq pmf.rel_mono_strong pmf_None_eq_weight_spmf set_pmf_iff)
+  qed
+qed
+
+lemma
+  assumes "weight_spmf p = weight_spmf q" "ord_spmf (=) p q"
+  shows   "p = q"
+  oops
+
+lemma mono_spmf_of_pmfsr:
+  assumes "ord_pmfsr r r'" "wf_pmfsr r" "wf_pmfsr r'"
+  shows   "ord_spmf (=) (spmf_of_pmfsr r) (spmf_of_pmfsr r')"
+  sorry
+
+lemma mono_spmf_of_pmfs:
+  assumes "ord_pmfs r r'"
+  shows   "ord_spmf (=) (spmf_of_pmfs r) (spmf_of_pmfs r')"
+  using assms by transfer (rule mono_spmf_of_pmfsr)
+
+
+
+
+declaration \<open>Partial_Function.init "pmfs" \<^term>\<open>pmfs.fixp_fun\<close>
+  \<^term>\<open>pmfs.mono_body\<close> @{thm pmfs.fixp_rule_uc} @{thm pmfs.fixp_induct_uc}
+  NONE\<close>
+
+declare pmfs.leq_refl[simp]
+declare admissible_leI[OF ccpo_pmfs, cont_intro]
+
+abbreviation "mono_pmfs \<equiv> monotone (fun_ord ord_pmfs) ord_pmfs"
+
+lemma bind_pmfs_mono':
+  assumes fg: "ord_pmfs f g"
+  and hk: "\<And>x :: 'a. ord_pmfs (h x) (k x)"
+shows "ord_pmfs (bind_pmfs f h) (bind_pmfs g k)"
+  using assms by transfer (use bind_pmfsr_mono' in blast)
+
+lemma bind_pmfs_mono [partial_function_mono]:
+  assumes mf: "mono_pmfs B" and mg: "\<And>y. mono_pmfs (\<lambda>f. C y f)"
+  shows "mono_pmfs (\<lambda>f. bind_pmfs (B f) (\<lambda>y. C y f))"
+proof (rule monotoneI)
+  fix f g :: "'a \<Rightarrow> 'b pmfs"
+  assume fg: "fun_ord ord_pmfs f g"
+  with mf have "ord_pmfs (B f) (B g)" by (rule monotoneD[of _ _ _ f g])
+  moreover from mg have "\<And>y'. ord_pmfs (C y' f) (C y' g)"
+    by (rule monotoneD) (rule fg)
+  ultimately show "ord_pmfs (bind_pmfs (B f) (\<lambda>y. C y f)) (bind_pmfs (B g) (\<lambda>y'. C y' g))"
+    by (rule bind_pmfs_mono')
+qed
+
+lemma monotone_bind_pmfs1: "monotone ord_pmfs ord_pmfs (\<lambda>y. bind_pmfs y g)"
+  by (rule monotoneI) (simp add: bind_pmfs_mono')
+
+lemma monotone_bind_pmfs2:
+  assumes g: "\<And>x. monotone ord ord_pmfs (\<lambda>y. g y x)"
+  shows "monotone ord ord_pmfs (\<lambda>y. bind_pmfs p (g y))"
+  by (rule monotoneI) (auto intro: bind_pmfs_mono' monotoneD[OF g])
+
+lemma bind_lub_pmfs:
+  assumes chain: "Complete_Partial_Order.chain ord_pmfs Y"
+  shows "bind_pmfs (lub_pmfs Y) f = lub_pmfs ((\<lambda>p. bind_pmfs p f) ` Y)" (is "?lhs = ?rhs")
+  sorry
+(*
+proof(cases "Y = {}")
+  case Y: False
+  show ?thesis
+  proof(rule spmf_eqI)
+    fix i
+    have chain': "Complete_Partial_Order.chain (\<le>) ((\<lambda>p x. ennreal (spmf p x * spmf (f x) i)) ` Y)"
+      using chain by(rule chain_imageI)(auto simp add: le_fun_def dest: ord_spmf_eq_leD intro: mult_right_mono)
+    have chain'': "Complete_Partial_Order.chain (ord_spmf (=)) ((\<lambda>p. p \<bind> f) ` Y)"
+      using chain by(rule chain_imageI)(auto intro!: monotoneI bind_spmf_mono' ord_spmf_reflI)
+    let ?M = "count_space (set_spmf (lub_spmf Y))"
+    have "ennreal (spmf ?lhs i) = \<integral>\<^sup>+ x. ennreal (spmf (lub_spmf Y) x) * ennreal (spmf (f x) i) \<partial>?M"
+      by(auto simp add: ennreal_spmf_lub_spmf ennreal_spmf_bind nn_integral_measure_spmf')
+    also have "\<dots> = \<integral>\<^sup>+ x. (SUP p\<in>Y. ennreal (spmf p x * spmf (f x) i)) \<partial>?M"
+      by(subst ennreal_spmf_lub_spmf[OF chain Y])(subst SUP_mult_right_ennreal, simp_all add: ennreal_mult Y)
+    also have "\<dots> = (SUP p\<in>Y. \<integral>\<^sup>+ x. ennreal (spmf p x * spmf (f x) i) \<partial>?M)"
+      using Y chain' by(rule nn_integral_monotone_convergence_SUP_countable) simp
+    also have "\<dots> = (SUP p\<in>Y. ennreal (spmf (bind_spmf p f) i))"
+      by(auto simp add: ennreal_spmf_bind nn_integral_measure_spmf nn_integral_count_space_indicator set_lub_spmf[OF chain] in_set_spmf_iff_spmf ennreal_mult intro!: arg_cong [of _ _ Sup] image_cong nn_integral_cong split: split_indicator)
+    also have "\<dots> = ennreal (spmf ?rhs i)" using chain'' by(simp add: ennreal_spmf_lub_spmf Y image_comp)
+    finally show "spmf ?lhs i = spmf ?rhs i" by simp
+  qed
+qed simp
 *)
 
-partial_function (pmfsr) geometric_pmfsr :: "unit \<Rightarrow> nat pmfsr" where
-  "geometric_pmfsr x =
-     do {b \<leftarrow> coin_pmfsr;
-         if b then return_pmfsr 0 else map_pmfsr Suc (geometric_pmfsr ())}"
+(*
+lemma map_lub_spmf:
+  "Complete_Partial_Order.chain (ord_spmf (=)) Y
+  \<Longrightarrow> map_spmf f (lub_spmf Y) = lub_spmf (map_spmf f ` Y)"
+unfolding map_spmf_conv_bind_spmf[abs_def] by(simp add: bind_lub_spmf o_def)
+*)
+                   
+lemma mcont_bind_pmfs1: "mcont lub_pmfs ord_pmfs lub_pmfs ord_pmfs (\<lambda>y. bind_pmfs y f)"
+  using monotone_bind_pmfs1 by (rule mcontI) (rule contI, simp add: bind_lub_pmfs)
 
-lemmas [code] = geometric_pmfsr.simps
+lemma bind_lub_pmfs2:
+  assumes chain: "Complete_Partial_Order.chain ord Y"
+  and g: "\<And>y. monotone ord ord_pmfs (g y)"
+  shows "bind_pmfs x (\<lambda>y. lub_pmfs (g y ` Y)) = lub_pmfs ((\<lambda>p. bind_pmfs x (\<lambda>y. g y p)) ` Y)"
+  (is "?lhs = ?rhs")
+  sorry
+(*
+proof(cases "Y = {}")
+  case Y: False
+  show ?thesis
+  proof(rule spmf_eqI)
+    fix i
+    have chain': "\<And>y. Complete_Partial_Order.chain (ord_spmf (=)) (g y ` Y)"
+      using chain g[THEN monotoneD] by(rule chain_imageI)
+    have chain'': "Complete_Partial_Order.chain (\<le>) ((\<lambda>p y. ennreal (spmf x y * spmf (g y p) i)) ` Y)"
+      using chain by(rule chain_imageI)(auto simp add: le_fun_def dest: ord_spmf_eq_leD monotoneD[OF g] intro!: mult_left_mono)
+    have chain''': "Complete_Partial_Order.chain (ord_spmf (=)) ((\<lambda>p. bind_spmf x (\<lambda>y. g y p)) ` Y)"
+      using chain by(rule chain_imageI)(rule monotone_bind_spmf2[OF g, THEN monotoneD])
 
-value "geometric_pmfsr () (replicate 3 False @- sconst True)"
+    have "ennreal (spmf ?lhs i) = \<integral>\<^sup>+ y. (SUP p\<in>Y. ennreal (spmf x y * spmf (g y p) i)) \<partial>count_space (set_spmf x)"
+      by(simp add: ennreal_spmf_bind ennreal_spmf_lub_spmf[OF chain'] Y nn_integral_measure_spmf' SUP_mult_left_ennreal ennreal_mult image_comp)
+    also have "\<dots> = (SUP p\<in>Y. \<integral>\<^sup>+ y. ennreal (spmf x y * spmf (g y p) i) \<partial>count_space (set_spmf x))"
+      unfolding nn_integral_measure_spmf' using Y chain''
+      by(rule nn_integral_monotone_convergence_SUP_countable) simp
+    also have "\<dots> = (SUP p\<in>Y. ennreal (spmf (bind_spmf x (\<lambda>y. g y p)) i))"
+      by(simp add: ennreal_spmf_bind nn_integral_measure_spmf' ennreal_mult)
+    also have "\<dots> = ennreal (spmf ?rhs i)" using chain'''
+      by(auto simp add: ennreal_spmf_lub_spmf Y image_comp)
+    finally show "spmf ?lhs i = spmf ?rhs i" by simp
+  qed
+qed simp
+*)
+
+lemma mcont_bind_pmfs [cont_intro]:
+  assumes f: "mcont luba orda lub_pmfs ord_pmfs f"
+  and g: "\<And>y. mcont luba orda lub_pmfs ord_pmfs (g y)"
+  shows "mcont luba orda lub_pmfs ord_pmfs (\<lambda>x. bind_pmfs (f x) (\<lambda>y. g y x))"
+proof(rule pmfs.mcont2mcont'[OF _ _ f])
+  fix z
+  show "mcont lub_pmfs ord_pmfs lub_pmfs ord_pmfs (\<lambda>x. bind_pmfs x (\<lambda>y. g y z))"
+    by(rule mcont_bind_pmfs1)
+next
+  fix x
+  let ?f = "\<lambda>z. bind_pmfs x (\<lambda>y. g y z)"
+  have "monotone orda ord_pmfs ?f" using mcont_mono[OF g] by(rule monotone_bind_pmfs2)
+  moreover have "cont luba orda lub_pmfs ord_pmfs ?f"
+  proof(rule contI)
+    fix Y
+    assume chain: "Complete_Partial_Order.chain orda Y" and Y: "Y \<noteq> {}"
+    have "bind_pmfs x (\<lambda>y. g y (luba Y)) = bind_pmfs x (\<lambda>y. lub_pmfs (g y ` Y))"
+      by (rule bind_pmfs_cong) (simp_all add: mcont_contD[OF g chain Y])
+    also have "\<dots> = lub_pmfs ((\<lambda>p. bind_pmfs x (\<lambda>y. g y p)) ` Y)" using chain
+      by (rule bind_lub_pmfs2)(rule mcont_mono[OF g])
+    finally show "bind_pmfs x (\<lambda>y. g y (luba Y)) = \<dots>" .
+  qed
+  ultimately show "mcont luba orda lub_pmfs ord_pmfs ?f" by(rule mcontI)
+qed
+
+lemma map_pmfs_mono [partial_function_mono]: "mono_pmfs B \<Longrightarrow> mono_pmfs (\<lambda>g. map_pmfs f (B g))"
+  unfolding map_pmfs_conv_bind_pmfs by(rule bind_pmfs_mono) simp_all
+
+lemma mcont_map_pmfs [cont_intro]:
+  "mcont luba orda lub_pmfs ord_pmfs g
+  \<Longrightarrow> mcont luba orda lub_pmfs ord_pmfs (\<lambda>x. map_pmfs f (g x))"
+  unfolding map_pmfs_conv_bind_pmfs by (rule mcont_bind_pmfs) simp_all
+
+lemma replicate_pmfs_mono [partial_function_mono]:
+  "mono_pmfs B \<Longrightarrow> mono_pmfs (\<lambda>g. replicate_pmfs n (B g))"
+  by (induction n) (auto intro!: partial_function_mono)
+
+lemma mcont_replicate_pmfs [cont_intro]:
+  assumes f: "mcont luba orda lub_pmfs ord_pmfs f"
+  shows "mcont luba orda lub_pmfs ord_pmfs (\<lambda>x. replicate_pmfs n (f x))"
+  by (induction n) (auto intro!: cont_intro assms)
+
+
+
+lemma monotone_set_pmfs: "monotone ord_pmfs (\<subseteq>) range_pmfs"
+  unfolding monotone_def
+  by transfer (use monotone_set_pmfsr in \<open>auto simp: monotone_def\<close>)
+
+lemma cont_set_pmfs: "cont lub_pmfs ord_pmfs Union (\<subseteq>) range_pmfs"
+  oops
+
+lemma mcont2mcont_set_pmfs[THEN mcont2mcont, cont_intro]:
+  shows mcont_set_pmfs: "mcont lub_pmfs ord_pmfs Union (\<subseteq>) range_pmfs"
+  oops
+(*
+by(rule mcontI monotone_set_pmfs cont_set_pmfs)+
+*)
+
+
+
+definition random_bit_list
+  where "random_bit_list = [False, False, True, True, True, False, True, True, False, False, False, False, True,
+ True, True, False, False, True, True, True, True, True, True, True, False, False, True,
+ True, False, True, False, True, False, False, False, False, True, True, True, True,
+ True, False, True, False, False, True, False, True, True, False, False, False, True,
+ False, True, True, False, True, False, False, False, False, True, True, True, False,
+ False, False, False, True, True, True, True, False, False, False, True, True, False,
+ True, False, True, False, False, True, False, True, False, False, True, False, True,
+ True, False, False, False, False, False, False, False, False, True, True, False, True,
+ False, True, False, True, False, True, False, True, True, False, True, True, True,
+ True, True, True, False, True, True, False, True, True, True, False, True, True, False,
+ False, False, True, True, True, True, True, False, True, False, False, False, False,
+ False, False, False, False, False, False, False, True, False, False, False, False,
+ True, False, False, False, True, True, False, False, False, True, False, False, True,
+ True, True, True, False, True, False, False, False, True, True, False, False, False,
+ True, False, False, False, True, True, False, True, False, False, False, True, False,
+ True, True, False, True, True, True, True, False, False, True, True, False, True,
+ False, False, True, False, False, False, False, False, False, True, True, True, False,
+ True, False, False, False, False, False, False, False, False, True, True, True, True,
+ False, True, True, True, False, False, True, False, True, False, True, False, False,
+ True, True, False, True, True, True, True, True, False, False, True, True, True, False,
+ False, True, False, False, False, False, False, False, True, False, True, True, False,
+ True, True, False, False, False, False, True, False, False, False, True, False, True,
+ True, False, True, False, False, True, True, True, False, True, True, False, False,
+ True, False, False, True, True, True, True, False, False, True, False, False, False,
+ False, False, True, True, False, False, True, True, False, True, True, True, False,
+ True, True, True, True, True, True, True, True, True, True, True, False, True, False,
+ True, False, True, True, True, True, True, True, False, False, True, False, True,
+ False, False, True, False, True, False, False, False, False, False, False, True, False,
+ True, False, True, True, False, False, True, True, False, True, True, False, True,
+ False, True, False, True, True, False, True, True, True, True, True, False, True,
+ False, False, False, False, True, False, True, False, True, True, False, True, False,
+ False, False, True, True, False, False, False, True, False, False, False, False, False,
+ False, True, False, True, True, False, False, True, False, True, True, False, False,
+ False, False, False, False, True, False, True, False, True, True, False, True, False,
+ True, True, True, False, True, True, False, True, True, True, False, True, False,
+ False, True, True, True, False, True, True, True, True, True, True, False, True, False,
+ True, False, False, True, False, True, True, False, False, False, False, True, False,
+ False, True, True, False, True, True, True, False, True, False, True, False, False,
+ False, True, True, True, True, True, False, True, True, False, False, True, True, True,
+ False, False, True, True, False, True, True, False, False, False, False, False, True,
+ True, True, False, False, False, True, True, False, True, True, True, False, True,
+ False, True, True, True, False, False, True, True, False, True, False, True, False,
+ False, False, True, True, True, False, False, True, True, False, True, True, False,
+ False, False, True, False, False, False, False, True, False, False, True, True, False,
+ True, True, False, True, False, False, True, True, True, False, True, True, True, True,
+ False, False, True, True, True, False, False, False, True, False, True, False, False,
+ True, True, False, True, False, False, True, False, False, True, True, True, False,
+ True, True, True, False, True, False, True, True, False, True, False, False, True,
+ False, False, True, False, True, False, False, True, True, True, True, True, True,
+ False, False, False, False, True, True, True, False, True, True, True, False, True,
+ False, False, True, True, True, True, True, False, False, False, True, True, False,
+ True, False, True, True, True, False, False, True, True, False, True, False, True,
+ True, True, False, False, True, True, True, True, False, False, True, False, False,
+ False, True, True, True, False, True, False, True, False, True, True, False, False,
+ False, False, False, False, False, True, False, False, True, True, True, True, True,
+ True, False, True, True, True, False, True, False, False, False, False, True, True,
+ True, True, True, True, True, True, True, True, True, True, True, True, False, False,
+ True, False, True, True, False, True, False, True, False, False, True, False, False,
+ True, True, False, False, False, True, False, False, True, False, False, True, True,
+ True, True, False, False, True, False, True, True, True, True, True, True, False,
+ False, False, False, False, False, False, False, True, True, False, True, False, True,
+ True, True, True, True, True, False, True, True, True, False, False, True, True, False,
+ False, False, False, True, True, False, True, True, True, True, True, True, True, True,
+ False, True, False, True, True, True, True, False, True, False, True, True, True, True,
+ True, True, False, True, True, False, True, False, True, False, True, True, False,
+ True, True, True, False, False, False, True, False, True, True, False, False, False,
+ True, False, True, True, False, True, True, False, False, True, False, True, False,
+ False, False, False, True, False, False, False, True, True, False, True, False, False,
+ False, True, True, True, True, True, False, False, False, False, True, False, False,
+ True, False, False, True, True, True, True, False, True, True, False, True, False,
+ True, True, True, True, False, False, False, False, False, True, True, True, True,
+ True, False, True, True, False, False, True, True, False, False, True, False, True,
+ True, False, False, True, False, True, True, False, True, True, True, True, False,
+ False, False, False, True, True, True, True, True, True, True, False, True, True, True,
+ True, False, False, True, True, True, False, True, True, True, True, False, True,
+ False, False, False, True, False, True, True, True, True, False, False, False, True,
+ False]"
+
+
+definition random_bits
+  where "random_bits i = cycle (rotate i random_bit_list)"
+
+
+code_lazy_type stream
+
+partial_function (pmfs) bernoulli_pmfs :: "real \<Rightarrow> bool pmfs" where
+  "bernoulli_pmfs p =
+     do {b \<leftarrow> coin_pmfs;
+         if b then
+           return_pmfs (p \<ge> 1/2)
+         else
+           bernoulli_pmfs (if p < 1/2 then 2 * p else 2 * p - 1)}"
+
+lemmas [code] = bernoulli_pmfs.simps
+
+value "run_pmfs' (bernoulli_pmfs (1/3)) (random_bits 1)"
+value "run_pmfs' (bernoulli_pmfs (1/3)) (random_bits 2)"
+value "run_pmfs' (bernoulli_pmfs (1/3)) (random_bits 8)"
+
+
+partial_function (pmfs) geometric_pmfs :: "real \<Rightarrow> nat pmfs" where
+  "geometric_pmfs p =
+     do {b \<leftarrow> bernoulli_pmfs p;
+         if b then return_pmfs 0 else map_pmfs Suc (geometric_pmfs p)}"
+
+lemmas [code] = geometric_pmfs.simps
+
+
+value "run_pmfs' (geometric_pmfs (1/3)) (random_bits 1)"
+value "map (\<lambda>i. fst (the (run_pmfs' (geometric_pmfs (1/3)) (random_bits i)))) [0..<100]"
+
+
+lemma loss_pmfs_bernoulli [simp]: "loss_pmfs (bernoulli_pmfs p) = 0"
+proof -
+  define f where "f = (\<lambda>p. loss_pmfs (bernoulli_pmfs p))"
+  have f_rec: "f p = f (if p < 1 / 2 then 2 * p else 2 * p - 1) / 2" for p
+    unfolding f_def
+    by (subst bernoulli_pmfs.simps)
+       (simp_all add: loss_bind_pmfs spmf_of_set_def integral_pmf_of_set UNIV_bool
+                 del: spmf_of_pmf_pmf_of_set)
+  have f_01: "f p \<in> {0..1}" for p
+    using loss_pmfs_01[of "bernoulli_pmfs p"] by (auto simp: f_def)
+  have f_le: "f p \<le> 1 / 2 ^ n" for n
+  proof (induction n arbitrary: p)
+    case (Suc p)
+    thus ?case
+      using f_01[of p] by (auto simp: f_rec[of p])
+  qed (use f_01 in auto)
+  show "f p = 0"
+  proof (rule ccontr)
+    assume "f p \<noteq> 0"
+    with f_01[of p] have "f p > 0"
+      by auto
+    have "\<exists>n. 2 ^ n > 1 / f p"
+      by (rule real_arch_pow) auto
+    then obtain n where "2 ^ n > 1 / f p"
+      by auto
+    hence "f p > 1 / 2 ^ n"
+      using \<open>f p > 0\<close> by (auto simp: field_simps)
+    with f_le[of n] show False
+      by simp
+  qed
+qed
+
+lemma spmf_of_pmfs_bernoulli [simp]: "spmf_of_pmfs (bernoulli_pmfs p) = spmf_of_pmf (bernoulli_pmf p)"
+  sorry
+
+
+lemma loss_pmfs_geometric [simp]:
+  assumes "p \<in> {0<..1}"
+  shows   "loss_pmfs (geometric_pmfs p) = 0"
+proof -
+  have "loss_pmfs (geometric_pmfs p) = loss_pmfs (geometric_pmfs p) * (1 - p)"
+    using assms by (subst geometric_pmfs.simps) (simp_all add: loss_bind_pmfs)
+  thus "loss_pmfs (geometric_pmfs p) = 0"
+    using assms by (auto simp: algebra_simps)
+qed
+
+
+
+partial_function (pmfs) while_pmfs :: "('a \<Rightarrow> bool) \<Rightarrow> ('a \<Rightarrow> 'a pmfs) \<Rightarrow> 'a \<Rightarrow> 'a pmfs" where
+  "while_pmfs guard body s =
+     (if guard s then return_pmfs s else body s \<bind> while_pmfs guard body)"
+
+lemmas [code] = while_pmfs.simps
+
+value "run_pmfs (while_pmfs (\<lambda>n::nat. n > 42) (\<lambda>n. map_pmfs (\<lambda>b. of_bool b + 2 * n) coin_pmfs) 0) (random_bits 0)"
+value "run_pmfs (while_pmfs (\<lambda>n::nat. n > 42) (\<lambda>n. map_pmfs (\<lambda>b. of_bool b + 2 * n) coin_pmfs) 0) (random_bits 4)"
+value "run_pmfs (while_pmfs (\<lambda>n::nat. n > 42) (\<lambda>n. map_pmfs (\<lambda>b. of_bool b + 2 * n) coin_pmfs) 0) (random_bits 5)"
+
+
+
+datatype 'a mytree = Node 'a "'a mytree list"
+
+partial_function (pmfs) foo :: "real \<Rightarrow> bool mytree pmfs" where
+  "foo p = do {
+     b \<leftarrow> coin_pmfs;
+     n \<leftarrow> geometric_pmfs p; map_pmfs (\<lambda>xs. Node b xs) (replicate_pmfs n (foo (2 * p)))}"
+
+lemmas [code] = foo.simps
+
+value "run_pmfs' (foo 0.1) (random_bits 1)"
+value "run_pmfs' (foo 0.1) (random_bits 2)"
+value "run_pmfs' (foo 0.1) (random_bits 3)"
 
 
 context
   fixes n :: nat
 begin
 
-partial_function (pmfsr) fast_dice_roll :: "nat \<Rightarrow> nat \<Rightarrow> nat pmfsr"
+partial_function (pmfs) fast_dice_roll :: "nat \<Rightarrow> nat \<Rightarrow> nat pmfs"
 where
   "fast_dice_roll v c = 
-  (if v \<ge> n then if c < n then return_pmfsr c else fast_dice_roll (v - n) (c - n)
+  (if v \<ge> n then if c < n then return_pmfs c else fast_dice_roll (v - n) (c - n)
    else do {
-     b \<leftarrow> coin_pmfsr;
+     b \<leftarrow> coin_pmfs;
      fast_dice_roll (2 * v) (2 * c + (if b then 1 else 0)) } )"
 
-definition fast_uniform :: "nat pmfsr"
+definition fast_uniform :: "nat pmfs"
   where "fast_uniform = fast_dice_roll 1 0"
 
 end
 
 lemmas [code] = fast_dice_roll.simps
 
-value "fast_uniform 10 ([True, False, True, True, False] @- sconst False)"
-value "fast_uniform 10 ([False, False, True, True, False] @- sconst False)"
-value "fast_uniform 10 ([True, False, True, False, False] @- sconst False)"
-value "fast_uniform 10 ([True, False, True, True, True] @- sconst False)"
-value "fast_uniform 10 ([True, False, True, True, False, True, True, False, True] @- sconst False)"
-value "fast_uniform 10 ([True, True, True, True, True, True, False, True, True] @- sconst False)"
+value "run_pmfs' (fast_uniform 10) ([True, False, True, True, False] @- sconst False)"
+value "run_pmfs' (fast_uniform 10) ([False, False, True, True, False] @- sconst False)"
+value "run_pmfs' (fast_uniform 10) ([True, False, True, False, False] @- sconst False)"
+value "run_pmfs' (fast_uniform 10) ([True, False, True, True, True] @- sconst False)"
+value "run_pmfs' (fast_uniform 10) ([True, False, True, True, False, True, True, False, True] @- sconst False)"
+value "run_pmfs' (fast_uniform 10) ([True, True, True, True, True, True, False, True, True] @- sconst False)"
+value "map (\<lambda>i. fst (the (run_pmfs' (fast_uniform 10) (random_bits i)))) [0..<100]"
+value "run_pmfs' (replicate_pmfs 100 (fast_uniform 10)) (random_bits 0)"
+value "run_pmfs' (replicate_pmfs 100 (fast_uniform 10)) (random_bits 43)"
+value "run_pmfs (consumption_pmfs (replicate_pmfs 100 (fast_uniform 10))) (random_bits 43)"
+
+
+ML_val \<open>
+@{theory}
+|> Theory.defs_of
+|> (fn defs => Defs.specifications_of defs (Defs.Const, @{const_name bernoulli_pmfs}))
+|> map (#def #> the)
+\<close>
+
+ML_val \<open>
+@{theory}
+|> Global_Theory.facts_of
+|> (fn f => Facts.extern @{context} f "PMF_Sampler.bernoulli_pmfs_def")
+\<close>
+
+ML_val \<open>
+@{theory}
+|> Theory.axiom_table
+|> (fn tbl => Name_Space.lookup tbl "PMF_Sampler.bernoulli_pmfs_def")
+|> the
+|> Syntax.pretty_term @{context}
+|> Pretty.writeln
+\<close>
+
+term "ccpo.fixp (fun_lub lub_pmfs) (fun_ord ord_pmfs)"
+
+thm ccpo.fixp_def[OF pmfs.ccpo]
+thm ccpo.iterates_def[OF pmfs.ccpo]
+
+find_theorems ccpo.fixp monotone "_ = _" name:Complete "ccpo.fixp"
+
+thm fun_lub_def
+
+ML_val \<open>@{term "pmfs.fixp_fun"}\<close>
 
 
 end
