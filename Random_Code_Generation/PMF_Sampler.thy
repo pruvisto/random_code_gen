@@ -113,6 +113,25 @@ lemma emeasure_coin_space_stake:
   shows   "emeasure coin_space (stake n -` A) = card A / 2 ^ n"
   using emeasure_coin_space_stake_sdrop[of A n UNIV] assms by (simp add: vimage_def)
 
+lemma prob_coin_space_stake:
+  assumes "\<And>xs. xs \<in> A \<Longrightarrow> length xs = n"
+  shows   "coin_space.prob (stake n -` A) = card A / 2 ^ n"
+  using emeasure_coin_space_stake[OF assms, of A] by (simp add: coin_space.emeasure_eq_measure)
+
+lemma emeasure_coin_space_shd: "emeasure coin_space (shd -` A) = card A / 2"
+proof -
+  have "shd -` A = stake 1 -` (\<lambda>b. [b]) ` A"
+    by safe simp_all
+  also have "emeasure coin_space \<dots> = ennreal (real (card ((\<lambda>b. [b]) ` A)) / 2)"
+    by (subst emeasure_coin_space_stake) auto
+  also have "\<dots> = ennreal (real (card A) / 2)"
+    by (subst card_image) (auto simp: inj_on_def)
+  finally show ?thesis .
+qed
+
+lemma prob_coin_space_shd: "coin_space.prob (shd -` A) = card A / 2"
+  using emeasure_coin_space_shd[of A] by (simp add: coin_space.emeasure_eq_measure)
+
 
 
 lifting_forget ptree.lifting
@@ -268,6 +287,22 @@ lemma fun_sampler_altdef:
   "fun_sampler p = (\<lambda>bs. fst (the (run_sampler p (bs @- sconst False))))"
   by transfer auto
 
+lemma fun_sampler_return:
+  "fun_sampler (return_sampler x) [] = x"
+  by transfer (auto simp: map_option_case split: option.splits)
+
+lemma fun_sampler_map:
+  assumes "bs \<in> set_ptree (ptree_of_sampler p)"
+  shows   "fun_sampler (map_sampler f p) bs = f (fun_sampler p bs)"
+  using assms by transfer (auto simp: map_option_case split: option.splits)
+
+lemma fun_sampler_of_ptree [simp]:
+  assumes "bs \<in> set_ptree t"
+  shows   "fun_sampler (sampler_of_ptree t) bs = bs"
+  using assms 
+  by transfer
+     (auto simp: map_option_case prefix_of_ptree_simps
+           dest: set_ptreeD sprefix_shiftD split: option.splits)
 
 lemma sampler_decompose:
   fixes p :: "'a sampler"
@@ -375,9 +410,9 @@ lemma map_map_sampler: "map_sampler f (map_sampler g p) = map_sampler (f \<circ>
   by transfer (auto simp: option.map_comp o_def prod.map_comp id_def)
  
 lemma bind_sampler_decompose:
-  "map_sampler f (sampler_of_ptree t1) \<bind> (\<lambda>x. map_sampler (g x) (sampler_of_ptree t2)) =
-   map_sampler (\<lambda>(x,y). g (f x) y)
-     (do {bs \<leftarrow> sampler_of_ptree t1; bs' \<leftarrow> sampler_of_ptree t2; return_sampler (bs, bs')})"
+  "map_sampler f (sampler_of_ptree t1) \<bind> (\<lambda>x. map_sampler (g x) (sampler_of_ptree (t2 x))) =
+   map_sampler (\<lambda>(bs,bs'). g (f bs) bs')
+     (do {bs \<leftarrow> sampler_of_ptree t1; bs' \<leftarrow> sampler_of_ptree (t2 (f bs)); return_sampler (bs, bs')})"
   by (simp add: map_bind_sampler bind_assoc_sampler bind_map_sampler o_def map_map_sampler
            flip: map_conv_bind_sampler)
 
@@ -769,6 +804,11 @@ lemma le_samplerD2:
   using assms unfolding less_eq_sampler_altdef
   by (metis ord_option_simps(2))
 
+lemma le_imp_fun_sampler_eq:
+  assumes "p \<le> q" "bs \<in> set_ptree (ptree_of_sampler p)"
+  shows   "fun_sampler p bs = fun_sampler q bs"
+  using assms unfolding fun_sampler_altdef set_ptree_of_sampler using le_samplerD1 by fastforce
+
 
 
 
@@ -790,7 +830,11 @@ lemma in_range_samplerE:
 
 lemma range_sampler_altdef': "range_sampler r = {x |x bs n. run_sampler r bs = Some (x, n)}"
   by (blast elim: in_range_samplerE intro: in_range_samplerI)
-  
+
+lemma map_sampler_cong [cong]:
+  "(\<And>x. x \<in> range_sampler p \<Longrightarrow> f x = g x) \<Longrightarrow> p = p' \<Longrightarrow> map_sampler f p = map_sampler g p'"
+  by (rule sampler_eqI)
+     (auto simp: map_option_case in_range_samplerI split: option.splits)
 
 lemma exists_sprefix_right [intro]: "\<exists>ys. sprefix xs ys"
   by (rule exI[of _ "xs @- sconst undefined"]) auto
@@ -906,18 +950,76 @@ lemma prefix_of_ptree_mono:
   apply (metis in_mono option.inject prefix_of_ptree_eq_SomeI)
   done
 
-lemma bind_sampler_mono_strong:
-  "p \<le> p' \<Longrightarrow> (\<And>x. x \<in> range_sampler p \<Longrightarrow> q x \<le> q' x) \<Longrightarrow> bind_sampler p q \<le> bind_sampler p' q'"
-  sorry
-
-lemma bind_sampler_mono:
-  "p \<le> p' \<Longrightarrow> (\<And>x. q x \<le> q' x) \<Longrightarrow> bind_sampler p q \<le> bind_sampler p' q'"
-  by (rule bind_sampler_mono_strong)
-
 lemma map_option_mono':
   "ord_option rel x y \<Longrightarrow> monotone rel rel' f \<Longrightarrow>
    ord_option rel' (map_option f x) (map_option f y)"
   by (auto simp: ord_option_case monotone_def split: option.splits)
+
+lemma sampler_of_ptree_le_iff [simp]: "sampler_of_ptree t \<le> sampler_of_ptree t' \<longleftrightarrow> t \<le> t'"
+proof
+  assume le: "t \<le> t'"
+  show "sampler_of_ptree t \<le> sampler_of_ptree t'"
+    unfolding less_eq_sampler_altdef run_sampler_of_ptree o_apply
+    by (rule allI map_option_mono' prefix_of_ptree_mono le monotoneI)+ auto
+next
+  assume le: "sampler_of_ptree t \<le> sampler_of_ptree t'"
+  thus "t \<le> t'"
+    unfolding less_eq_ptree_altdef using range_sampler_mono range_sampler_of_ptree by blast
+qed
+
+lemma sampler_of_ptree_mono: "t \<le> t' \<Longrightarrow> sampler_of_ptree t \<le> sampler_of_ptree t'"
+  by simp
+
+lemma run_sampler_mono: "p \<le> q \<Longrightarrow> ord_pmfsr (run_sampler p) (run_sampler q)"
+  by transfer auto
+
+lemma run_sampler_mono':
+  "p \<le> q \<Longrightarrow> bs = bs' \<Longrightarrow> ord_option (=) (run_sampler p bs) (run_sampler q bs')"
+  using run_sampler_mono[of p q] unfolding ord_pmfsr_def rel_fun_def by blast
+
+lemma bind_option_mono:
+  assumes "ord_option le x y" "\<And>x' y'. x = Some x' \<Longrightarrow> y = Some y' \<Longrightarrow> ord_option le' (f x') (g y')"
+  shows   "ord_option le' (Option.bind x f) (Option.bind y g)"
+  using assms by (auto simp: Option_bind_conv_case split: option.splits)
+
+lemma le_samplerI: "(\<And>bs. ord_option (=) (run_sampler p bs) (run_sampler q bs)) \<Longrightarrow> p \<le> q"
+  by (simp add: less_eq_sampler_altdef)
+
+lemma le_samplerD1':
+   "p \<le> q \<Longrightarrow> run_sampler p bs = Some xn \<Longrightarrow> run_sampler q bs = Some xn' \<Longrightarrow> xn = xn'"
+  using le_samplerD1[of p q bs xn] by simp
+
+lemma
+  assumes "p \<le> q" "run_sampler p bs = Some (x, n)" "run_sampler q bs = Some (y, m)"
+  shows   le_samplerD1_fst: "x = y" and le_samplerD1_snd: "n = m"
+  using le_samplerD1[of p q bs] assms by simp_all
+
+lemma bind_sampler_mono_strong:
+  assumes "p \<le> p'" "\<And>x. x \<in> range_sampler p \<Longrightarrow> q x \<le> q' x"
+  shows   "bind_sampler p q \<le> bind_sampler p' q'"
+proof -
+  have q: "q x \<le> q' y" if "x \<in> range_sampler p" "x = y" for x y
+    using assms that by blast
+  have q': "z1 = z2" "n = m"
+    if "run_sampler (q x) bs = Some (z1, n)" "run_sampler (q' y) bs' = Some (z2, m)"
+       "x \<in> range_sampler p" "x = y" "bs = bs'" for x y bs bs' z1 z2 n m
+    using that le_samplerD1'[OF q that(1,2)[unfolded \<open>bs = bs'\<close>]] by simp_all
+  show ?thesis
+  proof (rule le_samplerI)
+    fix bs :: "bool stream"
+    show "ord_option (=) (run_sampler (p \<bind> q) bs) (run_sampler (p' \<bind> q') bs)"
+      unfolding run_sampler_bind
+      by (rule bind_option_mono run_sampler_mono' assms q ord_option.intros
+               arg_cong[of _ _ "\<lambda>n. sdrop n bs" for bs] arg_cong2[of _ _ _ _ "(+)"]
+             | erule in_range_samplerI
+             | erule (1) le_samplerD1_fst[OF assms(1)] le_samplerD1_snd[OF assms(1)] q'
+             | safe)+
+  qed
+qed
+
+lemma bind_sampler_mono:
+  "p \<le> p' \<Longrightarrow> (\<And>x. q x \<le> q' x) \<Longrightarrow> bind_sampler p q \<le> bind_sampler p' q'"
+  by (rule bind_sampler_mono_strong)
 
 lemma map_sampler_eq_bot_iff [simp]: "map_sampler f p = bot \<longleftrightarrow> p = bot"
 proof
@@ -939,24 +1041,6 @@ lemma ptree_of_sampler_bot [simp]: "ptree_of_sampler bot = bot"
             sampler_decompose set_ptree_bot set_ptree_inverse)
 
 
-
-lemma sampler_of_ptree_le_iff [simp]: "sampler_of_ptree t \<le> sampler_of_ptree t' \<longleftrightarrow> t \<le> t'"
-proof
-  assume le: "t \<le> t'"
-  show "sampler_of_ptree t \<le> sampler_of_ptree t'"
-    unfolding less_eq_sampler_altdef run_sampler_of_ptree o_apply
-    by (rule allI map_option_mono' prefix_of_ptree_mono le monotoneI)+ auto
-next
-  assume le: "sampler_of_ptree t \<le> sampler_of_ptree t'"
-  thus "t \<le> t'"
-    unfolding less_eq_ptree_altdef using range_sampler_mono range_sampler_of_ptree by blast
-qed
-
-lemma sampler_of_ptree_mono: "t \<le> t' \<Longrightarrow> sampler_of_ptree t \<le> sampler_of_ptree t'"
-  by simp
-
-lemma run_sampler_mono: "p \<le> q \<Longrightarrow> ord_pmfsr (run_sampler p) (run_sampler q)"
-  by transfer auto
 
 lemma chain_sampler_of_ptree:
   assumes "Complete_Partial_Order.chain (\<le>) Y"
@@ -1075,6 +1159,21 @@ proof -
   finally show ?thesis .
 qed
 
+lemma prob_ptree_singleton:
+  "ptree.prob t {Some bs} = (if bs \<in> set_ptree t then 1 / 2 ^ length bs else 0)"
+proof -
+  have "{Some bs} = Some ` {bs}"
+    by auto
+  also have "ptree.prob t \<dots> = coin_space.prob {bs'. sprefix bs bs' \<and> bs \<in> set_ptree t}"
+    by (subst prob_ptree) auto
+  also have "{bs'. sprefix bs bs' \<and> bs \<in> set_ptree t} =
+             (if bs \<in> set_ptree t then stake (length bs) -` {bs} else {})"
+    by (auto simp: sprefix_def)
+  also have "coin_space.prob \<dots> = (if bs \<in> set_ptree t then 1 / 2 ^ length bs else 0)"
+    using prob_coin_space_stake[of "{bs}" "length bs"] by auto
+  finally show ?thesis .
+qed
+
 context
 begin
 
@@ -1086,6 +1185,9 @@ proof (intro conjI, goal_cases)
   show "AE x in measure_ptree t. ptree.prob t {x} \<noteq> 0 "
     by (subst ptree.AE_support_countable) auto
 qed auto
+
+lemma measure_pmf_of_ptree: "measure_pmf (spmf_of_ptree t) = measure_ptree t"
+  by (simp add: spmf_of_ptree.rep_eq)
 
 lemma spmf_spmf_of_ptree:
   "spmf (spmf_of_ptree t) bs = indicator (set_ptree t) bs / 2 ^ length bs"
@@ -1192,6 +1294,17 @@ qed
 
   
 
+lift_definition coin_sampler :: "bool sampler" is
+  "\<lambda>bs. Some (shd bs, 1)"
+  by (auto simp: wf_pmfsr_def)
+
+lemma run_sampler_coin [simp]: "run_sampler coin_sampler bs = Some (shd bs, 1)"
+  by transfer auto
+
+lemma coin_sampler_altdef: "coin_sampler = map_sampler hd (sampler_of_ptree (ptree_of_length 1))"
+  by (rule sampler_eqI) (auto simp: run_sampler_of_ptree)
+
+
 
 
 
@@ -1199,99 +1312,223 @@ qed
 definition measure_sampler :: "'a sampler \<Rightarrow> 'a option measure" where
   "measure_sampler p = distr coin_space (count_space UNIV) (map_option fst \<circ> run_sampler p)"
 
-definition spmf_of_sampler :: "'a sampler \<Rightarrow> 'a spmf" where
-  "spmf_of_sampler p = map_spmf (fun_sampler p) (spmf_of_ptree (ptree_of_sampler p))"
+definition spmf_of_sampler' :: "'a sampler \<Rightarrow> ('a \<times> nat) spmf" where
+  "spmf_of_sampler' p = map_spmf (\<lambda>bs. (fun_sampler p bs, length bs)) (spmf_of_ptree (ptree_of_sampler p))"
 
-lemma measure_pmf_of_ptree: "measure_pmf (spmf_of_ptree t) = measure_ptree t"
-  by (simp add: spmf_of_ptree.rep_eq)
-
-lemma spmf_spmf_of_sampler:
-  "spmf (spmf_of_sampler p) x = coin_space.prob {bs'. \<exists>n. run_sampler p bs' = Some (x, n)}"
+lemma spmf_spmf_of_sampler':
+  "spmf (spmf_of_sampler' p) xn = coin_space.prob (run_sampler p -` {Some xn})"
 proof -
   define t where "t = ptree_of_sampler p"
   define f where "f = fun_sampler p"
   have p_eq: "p = map_sampler f (sampler_of_ptree t)"
     by (simp add: f_def t_def flip: sampler_decompose)
 
-  have "spmf (spmf_of_sampler p) x = ptree.prob t (Some ` f -` {x})"
-    by (simp add: spmf_of_sampler_def spmf_map measure_measure_spmf_conv_measure_pmf
+  have "spmf (spmf_of_sampler' p) xn = ptree.prob t (Some ` (\<lambda>bs. (f bs, length bs)) -` {xn})"
+    by (simp add: spmf_of_sampler'_def spmf_map measure_measure_spmf_conv_measure_pmf
                   measure_pmf_of_ptree t_def f_def)
-  also have "\<dots> = coin_space.prob (Collect (\<lambda>bs'. \<exists>bs\<in>set_ptree t. sprefix bs bs' \<and> f bs = x))"
+  also have "\<dots> = coin_space.prob (Collect (\<lambda>bs'. \<exists>bs\<in>set_ptree t. sprefix bs bs' \<and> f bs = fst xn \<and> length bs = snd xn))"
     unfolding prob_ptree by (rule arg_cong[of _ _ coin_space.prob]) auto
-  also have "Collect (\<lambda>bs'. \<exists>bs\<in>set_ptree t. sprefix bs bs' \<and> f bs = x) =
-             Collect (\<lambda>bs'. \<exists>n. run_sampler p bs' = Some (x, n))"
+  also have "Collect (\<lambda>bs'. \<exists>bs\<in>set_ptree t. sprefix bs bs' \<and> f bs = fst xn \<and> length bs = snd xn) =
+             Collect (\<lambda>bs'.  run_sampler p bs' = Some xn)"
     by (intro arg_cong[of _ _ Collect] ext)
        (auto simp: p_eq run_sampler_of_ptree prefix_of_ptree_simps)
-  finally show ?thesis .
+  finally show ?thesis by (simp add: vimage_def)
 qed
 
-lemma spmf_of_samler_bot [simp]: "spmf_of_sampler bot = return_pmf None"
-  by (simp add: spmf_of_sampler_def )
-
-lemma map_sampler_cong [cong]:
-  "(\<And>x. x \<in> range_sampler p \<Longrightarrow> f x = g x) \<Longrightarrow> p = p' \<Longrightarrow> map_sampler f p = map_sampler g p'"
-  by (rule sampler_eqI)
-     (auto simp: map_option_case in_range_samplerI split: option.splits)
-
-lemma le_imp_fun_sampler_eq:
-  assumes "p \<le> q" "bs \<in> set_ptree (ptree_of_sampler p)"
-  shows   "fun_sampler p bs = fun_sampler q bs"
-  using assms unfolding fun_sampler_altdef set_ptree_of_sampler using le_samplerD1 by fastforce
-
-lemma fun_sampler_return:
-  "fun_sampler (return_sampler x) [] = x"
-  by transfer (auto simp: map_option_case split: option.splits)
-
-lemma fun_sampler_map:
-  assumes "bs \<in> set_ptree (ptree_of_sampler p)"
-  shows   "fun_sampler (map_sampler f p) bs = f (fun_sampler p bs)"
-  using assms by transfer (auto simp: map_option_case split: option.splits)
-
-lemma fun_sampler_of_ptree [simp]:
-  assumes "bs \<in> set_ptree t"
-  shows   "fun_sampler (sampler_of_ptree t) bs = bs"
-  using assms 
-  by transfer
-     (auto simp: map_option_case prefix_of_ptree_simps
-           dest: set_ptreeD sprefix_shiftD split: option.splits)
-
-
-lemma spmf_of_sampler_welldefined:
+lemma spmf_of_sampler'_welldefined:
   assumes "p = map_sampler f (sampler_of_ptree t)"
-  shows   "spmf_of_sampler p = map_spmf f (spmf_of_ptree t)"
+  shows   "spmf_of_sampler' p = map_spmf (\<lambda>bs. (f bs, length bs)) (spmf_of_ptree t)"
 proof -
-  have "spmf_of_sampler p = map_spmf (fun_sampler p) (spmf_of_ptree (ptree_of_sampler p))"
-    by (simp add: spmf_of_sampler_def o_def)
+  have "spmf_of_sampler' p = map_spmf (\<lambda>bs. (fun_sampler p bs, length bs)) (spmf_of_ptree (ptree_of_sampler p))"
+    by (simp add: spmf_of_sampler'_def o_def)
   also have "ptree_of_sampler p = t"
     using assms by simp
-  also have "map_spmf (fun_sampler p) (spmf_of_ptree t) = map_spmf f (spmf_of_ptree t)"
+  also have "map_spmf (\<lambda>bs. (fun_sampler p bs, length bs)) (spmf_of_ptree t) = 
+             map_spmf (\<lambda>bs. (f bs, length bs)) (spmf_of_ptree t)"
     by (rule map_spmf_cong) (auto simp: assms fun_sampler_map)
   finally show ?thesis by simp
 qed
 
-lemma spmf_of_sampler_return [simp]:
-  "spmf_of_sampler (return_sampler x) = return_spmf x"
-  by (subst spmf_of_sampler_welldefined[of _ "\<lambda>_. x" "singleton_ptree []"]) auto
+lemma spmf_of_samler'_bot [simp]: "spmf_of_sampler' bot = return_pmf None"
+  by (simp add: spmf_of_sampler'_def)
 
-lemma spmf_of_sampler_map [simp]:
-  "spmf_of_sampler (map_sampler f p) = map_spmf f (spmf_of_sampler p)"
-proof -
-  have "spmf_of_sampler (map_sampler f p) =
-          map_spmf (fun_sampler (map_sampler f p)) (spmf_of_ptree (ptree_of_sampler p))"
-    by (simp add: spmf_of_sampler_def spmf.map_comp o_def )
-  also have "\<dots> = map_spmf (f \<circ> fun_sampler p) (spmf_of_ptree (ptree_of_sampler p))"
-    by (intro map_spmf_cong) (auto simp: fun_sampler_map)
-  also have "\<dots> = map_spmf f (spmf_of_sampler p)"
-    by (simp add: spmf_of_sampler_def spmf.map_comp)
-  finally show ?thesis .
+lemma spmf_of_sampler'_return [simp]:
+  "spmf_of_sampler' (return_sampler x) = return_spmf (x, 0)"
+  by (subst spmf_of_sampler'_welldefined[of _ "\<lambda>_. x" "singleton_ptree []"]) auto
+
+lemma spmf_of_sampler'_map [simp]:
+  "spmf_of_sampler' (map_sampler f p) = map_spmf (map_prod f id) (spmf_of_sampler' p)"
+proof (cases p)
+  case (1 g t)
+  show ?thesis
+  proof (subst (1 2) spmf_of_sampler'_welldefined)
+    show "p = map_sampler g (sampler_of_ptree t)"
+      by fact
+    show "map_sampler f p = map_sampler (f \<circ> g) (sampler_of_ptree t)"
+      using 1 by (simp add: map_map_sampler)
+  qed (auto simp: spmf.map_comp o_def)
 qed
 
-lemma spmf_of_sampler_bind [simp]:
-  "spmf_of_sampler (bind_sampler p q) = bind_spmf (spmf_of_sampler p) (spmf_of_sampler \<circ> q)"
-  sorry
+lemma spmf_of_sampler'_of_ptree [simp]:
+  "spmf_of_sampler' (sampler_of_ptree t) = map_spmf (\<lambda>bs. (bs, length bs)) (spmf_of_ptree t)"
+  by (subst spmf_of_sampler'_welldefined[of _ id t]) auto
 
-lemma spmf_of_sampler_of_ptree [simp]: "spmf_of_sampler (sampler_of_ptree t) = spmf_of_ptree t"
-  by (subst spmf_of_sampler_welldefined[of _ id t]) auto
+lemma spmf_of_sampler'_coin [simp]:
+  "spmf_of_sampler' coin_sampler = map_spmf (\<lambda>b. (b, 1)) coin_spmf" (is "?lhs = ?rhs")
+proof (rule spmf_eqI)
+  fix bn :: "bool \<times> nat"
+  obtain b n where [simp]: "bn = (b, n)"
+    by (cases bn)
+  have "spmf ?lhs bn = (if n = 1 then coin_space.prob (shd -` {b}) else 0)"
+    by (auto simp: spmf_spmf_of_sampler' vimage_def)
+  also have "coin_space.prob (shd -` {b}) = 1/2"
+    by (subst prob_coin_space_shd) auto
+  finally have *: "spmf ?lhs bn = (if n = 1 then 1 / 2 else 0)" .
+
+  have "spmf ?rhs bn = card ((\<lambda>b. (b, 1)) -` {(b, n)}) / 2"
+    by (subst spmf_map) (auto simp: measure_spmf_spmf_of_set measure_pmf_of_set)
+  also have "((\<lambda>b. (b, 1)) -` {(b, n)}) = (if n = 1 then {b} else {})"
+    by auto
+  finally have "spmf ?rhs bn = (if n = 1 then 1 / 2 else 0)"
+    by auto
+  with * show "spmf ?lhs bn = spmf ?rhs bn"
+    by (simp only: )
+qed
+
+
+
+
+
+definition spmf_of_sampler :: "'a sampler \<Rightarrow> 'a spmf" where
+  "spmf_of_sampler p = map_spmf fst (spmf_of_sampler' p)"
+
+definition spmf_sampler_cost :: "'a sampler \<Rightarrow> nat spmf" where
+  "spmf_sampler_cost p = map_spmf snd (spmf_of_sampler' p)"
+
+lemma spmf_of_sampler_bot [simp]: "spmf_of_sampler bot = return_pmf None"
+  and spmf_sampler_cost_bot [simp]: "spmf_sampler_cost bot = return_pmf None"
+  by (simp_all add: spmf_of_sampler_def spmf_sampler_cost_def)
+
+lemma spmf_of_sampler_return [simp]: "spmf_of_sampler (return_sampler x) = return_spmf x"
+  and spmf_sampler_cost_return [simp]: "spmf_sampler_cost (return_sampler x) = return_spmf 0"
+  by (simp_all add: spmf_of_sampler_def spmf_sampler_cost_def)
+
+lemma spmf_of_sampler_coin [simp]: "spmf_of_sampler coin_sampler = coin_spmf"
+  and spmf_sampler_cost_coin [simp]: "spmf_sampler_cost coin_sampler = return_spmf 1"
+  by (simp_all add: spmf_of_sampler_def spmf_sampler_cost_def spmf.map_comp o_def
+                    map_const_spmf_of_set)
+
+
+
+lemma spmf_of_sampler_of_ptree [simp]:
+        "spmf_of_sampler (sampler_of_ptree t) = spmf_of_ptree t"
+  and spmf_sampler_cost_of_ptree [simp]:
+        "spmf_sampler_cost (sampler_of_ptree t) = map_spmf length (spmf_of_ptree t)"
+  by (simp_all add: spmf_of_sampler_def spmf_sampler_cost_def spmf.map_comp o_def)
+
+lemma spmf_of_sampler_map [simp]:
+        "spmf_of_sampler (map_sampler f p) = map_spmf f (spmf_of_sampler p)"
+  and spmf_sampler_cost_map [simp]:
+        "spmf_sampler_cost (map_sampler f p) = spmf_sampler_cost p"
+  by (simp_all add: spmf_of_sampler_def spmf_sampler_cost_def spmf.map_comp o_def)
+
+(* TODO Move *)
+lemma sprefix_append: "sprefix (xs @ ys) zs \<longleftrightarrow> sprefix xs zs \<and> sprefix ys (sdrop (length xs) zs)"
+  by (auto simp add: sprefix_altdef)
+
+lemma spmf_of_sampler'_bind_aux:
+  "spmf_of_sampler' (do {bs \<leftarrow> sampler_of_ptree t; bs' \<leftarrow> sampler_of_ptree (t' bs); return_sampler (bs, bs')}) =
+     do {bs \<leftarrow> spmf_of_ptree t; bs' \<leftarrow> spmf_of_ptree (t' bs); return_spmf ((bs, bs'), length bs + length bs')}" 
+  (is "?lhs = ?rhs")
+proof (rule spmf_eqI)
+  fix z :: "(bool list \<times> bool list) \<times> nat"
+  obtain bs bs' n where [simp]: "z = ((bs, bs'), n)"
+    by (metis apfst_convE)
+  define P where "P = (n = length bs + length bs' \<and> bs \<in> set_ptree t \<and> bs' \<in> set_ptree (t' bs))"
+  have "spmf ?lhs z = coin_space.prob
+          (run_sampler (sampler_of_ptree t \<bind> (\<lambda>bs. map_sampler (Pair bs)
+             (sampler_of_ptree (t' bs)))) -` {Some ((bs, bs'), n)})" (is "_ = coin_space.prob ?A")
+    unfolding map_conv_bind_sampler [symmetric] by (simp add: spmf_spmf_of_sampler')
+  also have "?A = (if P then {bs''. sprefix (bs @ bs') bs''} else {})"
+    by (auto simp: run_sampler_bind run_sampler_of_ptree Option_bind_conv_case P_def
+                   prefix_of_ptree_simps sprefix_append dest: set_ptree_sprefixD
+             split: option.splits)+
+  also have "{bs''. sprefix (bs @ bs') bs''} = stake (length bs + length bs') -` {bs @ bs'}"
+    by (auto simp: sprefix_def)
+  also have "coin_space.prob (if P then \<dots> else {}) =
+               (if P then coin_space.prob (stake n -` {bs @ bs'}) else 0)"
+    by (auto simp: P_def)
+  also have "\<dots> = (if P then 1 / 2 ^ n else 0)"
+    by (rule if_cong; (subst prob_coin_space_stake)?) (auto simp: P_def)
+  finally have lhs: "spmf ?lhs z = (if P then 1 / 2 ^ n else 0)" .
+
+  have rhs: "spmf ?rhs z = (if P then 1 / 2 ^ n else 0)"
+  proof (cases P)
+    case False
+    hence "z \<notin> set_spmf ?rhs"
+      by (auto simp: P_def set_bind_spmf)
+    hence "spmf ?rhs z = 0"
+      by (simp add: spmf_eq_0_set_spmf)
+    with False show ?thesis
+      by simp
+  next
+    case True
+    define p where "p = coin_space.prob (stake (length bs') -` {bs'})"
+    have "spmf ?rhs z = (LINT x|measure_spmf (spmf_of_ptree t).
+            coin_space.prob {bs''. sprefix bs' bs'' \<and> bs' \<in> set_ptree (t' x) \<and> x = bs \<and> length x = length bs})"
+      (is "_ = lebesgue_integral _ (\<lambda>x. coin_space.prob (?A x))")
+      using True unfolding map_spmf_conv_bind_spmf [symmetric] P_def
+      by (simp add: measure_measure_spmf_conv_measure_pmf spmf_bind conj_commute 
+                    spmf_map measure_pmf_of_ptree prob_ptree)
+    also have "?A = (\<lambda>x. if x = bs then stake (length bs') -` {bs'} else {})"
+      using True by (auto simp: P_def fun_eq_iff sprefix_def)
+    also have "(\<lambda>x. coin_space.prob (\<dots> x)) = (\<lambda>x. indicator {bs} x * p)"
+      by (auto simp: p_def)
+    also have "(LINT x|measure_spmf (spmf_of_ptree t). \<dots> x) = p / 2 ^ length bs"
+      using True by (simp add: measure_measure_spmf_conv_measure_pmf prob_ptree_singleton
+                               measure_pmf_of_ptree P_def)
+    also have "\<dots> = 1 / 2 ^ n"
+      using True unfolding p_def P_def by (subst prob_coin_space_stake) (auto simp: power_add)
+    finally show ?thesis
+      using True by auto
+  qed
+
+  from lhs and rhs show "spmf ?lhs z = spmf ?rhs z"
+    by (simp only: )
+qed
+
+lemma spmf_of_sampler'_bind [simp]:
+  "spmf_of_sampler' (bind_sampler p q) =
+     do {(x, m) \<leftarrow> spmf_of_sampler' p; (y, n) \<leftarrow> spmf_of_sampler' (q x); return_spmf (y, m + n)}"
+proof -
+  define fp tp where "fp = fun_sampler p" and "tp = ptree_of_sampler p"
+  define fq tq where "fq = fun_sampler \<circ> q" and "tq = ptree_of_sampler \<circ> q"
+  have pq_eq: "p = map_sampler fp (sampler_of_ptree tp)"
+              "q = (\<lambda>x. map_sampler (fq x) (sampler_of_ptree (tq x)))"
+    by (simp_all add: fp_def tp_def fq_def tq_def flip: sampler_decompose)
+  show ?thesis
+    by (simp add: pq_eq bind_sampler_decompose spmf_of_sampler'_bind_aux map_spmf_conv_bind_spmf)
+qed
+  
+lemma spmf_of_sampler_bind [simp]:
+        "spmf_of_sampler (bind_sampler p q) = bind_spmf (spmf_of_sampler p) (spmf_of_sampler \<circ> q)"
+  and spmf_sampler_cost_bind:
+        "spmf_sampler_cost (bind_sampler p q) =
+           do {(x,m) \<leftarrow> spmf_of_sampler' p; map_spmf ((+) m) (spmf_sampler_cost (q x))}"
+  by (simp_all add: spmf_of_sampler_def spmf_sampler_cost_def
+                    map_spmf_conv_bind_spmf case_prod_unfold)
+
+
+
+definition run_sampler' where
+  "run_sampler' p bs = map_option (map_prod id (\<lambda>n. sdrop n bs)) (run_sampler p bs)"
+
+definition measure_sampler' :: "'a sampler \<Rightarrow> ('a \<times> bool stream) option measure" where
+  "measure_sampler' p =
+     distr coin_space (option_measure (count_space UNIV \<Otimes>\<^sub>M coin_space)) (run_sampler' p)"
+
+
+
 
 lemma ptree_of_sampler_mono:
   assumes "p \<le> q"
@@ -1311,32 +1548,40 @@ proof -
   qed
 qed
 
+lemma vimage_mono': "(\<And>x. f x \<in> A \<Longrightarrow> g x \<in> B) \<Longrightarrow> f -` A \<subseteq> g -` B"
+  by blast
+
+lemma spmf_of_sampler'_mono:
+  assumes "p \<le> q"
+  shows   "ord_spmf (=) (spmf_of_sampler' p) (spmf_of_sampler' q)"
+proof (rule ord_pmf_increaseI)
+  fix xn :: "'a \<times> nat"
+  obtain x n where [simp]: "xn = (x, n)"
+    by (cases xn)
+  show "spmf (spmf_of_sampler' p) xn \<le> spmf (spmf_of_sampler' q) xn"
+    using assms unfolding spmf_spmf_of_sampler'
+    by (intro coin_space.finite_measure_mono vimage_mono' 
+                 measurable_sets_coin_space[OF measurable_run_sampler])
+       (auto dest: le_samplerD1)
+qed auto
+
+lemma map_spmf_mono':
+  assumes "ord_spmf R p q" "\<And>x y. R x y \<Longrightarrow> S (f x) (f y)"
+  shows   "ord_spmf S (map_spmf f p) (map_spmf f q)"
+  using assms unfolding ord_spmf_map_spmf12 by (rule ord_spmf_mono)
+
 lemma spmf_of_sampler_mono:
   assumes "p \<le> q"
   shows   "ord_spmf (=) (spmf_of_sampler p) (spmf_of_sampler q)"
-proof (rule ord_pmf_increaseI)
-  fix x :: 'a
-  have *: "(\<exists>n. run_sampler q bs = Some (x, n))" if "(\<exists>n. run_sampler p bs = Some (x, n))" for bs
-    by (rule ex_forward [OF that]) (use assms le_samplerD1 in blast)
-  show "spmf (spmf_of_sampler p) x \<le> spmf (spmf_of_sampler q) x"
-    unfolding spmf_spmf_of_sampler
-  proof (rule coin_space.finite_measure_mono)
-    have meas: "run_sampler q -` {Some (x, n)} \<inter> space coin_space \<in> coin_space.events" for n
-      by measurable
-    have "{bs'. \<exists>n. run_sampler q bs' = Some (x, n)} = (\<Union>n. run_sampler q -` {Some (x, n)})"
-      by auto
-    also have "\<dots> \<in> sets coin_space"
-      using meas by (intro sets.countable_UN) (auto simp: space_coin_space)
-    finally show "{bs'. \<exists>n. run_sampler q bs' = Some (x, n)} \<in> coin_space.events" .
-  qed (use * in auto)
-qed auto
+  unfolding spmf_of_sampler_def by (rule map_spmf_mono' spmf_of_sampler'_mono assms)+ simp_all
 
-lemma lub_spmf_of_sampler:
+lemma lub_spmf_of_sampler':
   assumes "Complete_Partial_Order.chain (\<le>) Y"
-  shows   "lub_spmf (spmf_of_sampler ` Y) = spmf_of_sampler (Sup Y)"
+  shows   "lub_spmf (spmf_of_sampler' ` Y) = spmf_of_sampler' (Sup Y)"
 proof -
   define Y' where "Y' = ptree_of_sampler ` Y"
   define f where "f = fun_sampler (Sup Y)"
+  define f' where "f' = (\<lambda>bs. (f bs, length bs))"
   have "(\<lambda>x. x) ` Y = map_sampler f ` sampler_of_ptree ` Y'"
     unfolding Y'_def image_image
   proof (intro image_cong refl)
@@ -1355,18 +1600,32 @@ proof -
   have chain_Y': "Complete_Partial_Order.chain (\<le>) Y'"
     unfolding Y'_def by (rule chain_imageI[OF assms]) (auto intro: ptree_of_sampler_mono)
 
-  have "lub_spmf (spmf_of_sampler ` Y) = lub_spmf (map_spmf f ` spmf_of_ptree ` Y')"
-    by (simp add: Y image_image )
-  also have "\<dots> = map_spmf f (lub_spmf (spmf_of_ptree ` Y'))"
+  have "lub_spmf (spmf_of_sampler' ` Y) = lub_spmf (map_spmf f' ` spmf_of_ptree ` Y')"
+    by (simp add: Y image_image spmf.map_comp o_def f'_def)
+  also have "\<dots> = map_spmf f' (lub_spmf (spmf_of_ptree ` Y'))"
     by (rule map_lub_spmf [symmetric] chain_imageI[OF chain_Y'] spmf_of_ptree_mono)+
   also have "lub_spmf (spmf_of_ptree ` Y') = spmf_of_ptree (Sup Y')"
     using chain_Y' by (rule spmf_of_ptree_Sup [symmetric])
-  also have "map_spmf f (spmf_of_ptree (\<Squnion> Y')) =
-             spmf_of_sampler (map_sampler f (sampler_of_ptree (\<Squnion>Y')))"
-    by simp
+  also have "map_spmf f' (spmf_of_ptree (\<Squnion> Y')) =
+             spmf_of_sampler' (map_sampler f (sampler_of_ptree (\<Squnion>Y')))"
+    by (simp add: spmf.map_comp o_def f'_def)
   also have "map_sampler f (sampler_of_ptree (\<Squnion>Y')) = \<Squnion>Y"
     by (simp add: Sup_map_sampler Y chain_Y' compatible_sampler_of_ptree 
                   ptree_chain_imp_compatible sampler_of_ptree_Sup)
+  finally show ?thesis .
+qed
+
+lemma lub_spmf_of_sampler:
+  assumes "Complete_Partial_Order.chain (\<le>) Y"
+  shows   "lub_spmf (spmf_of_sampler ` Y) = spmf_of_sampler (Sup Y)"
+proof -
+  have "lub_spmf (spmf_of_sampler ` Y) = lub_spmf (map_spmf fst ` spmf_of_sampler' ` Y)"
+    by (simp add: image_image spmf_of_sampler_def)
+  also have "\<dots> = map_spmf fst (lub_spmf (spmf_of_sampler' ` Y))"
+    by (rule map_lub_spmf [symmetric])
+       (use assms  in \<open>auto intro: chain_imageI spmf_of_sampler'_mono\<close>)
+  also have "\<dots> = spmf_of_sampler (Sup Y)"
+    using assms by (simp add: lub_spmf_of_sampler' spmf_of_sampler_def)
   finally show ?thesis .
 qed
 
@@ -1446,8 +1705,6 @@ interpretation sampler: partial_function_definitions "(\<le>)" "Sup :: 'a sample
 declaration \<open>Partial_Function.init "sampler" \<^term>\<open>sampler.fixp_fun\<close>
   \<^term>\<open>sampler.mono_body\<close> @{thm sampler.fixp_rule_uc} @{thm sampler.fixp_induct_uc} NONE\<close>
 
-
-consts coin_sampler :: "real \<Rightarrow> bool sampler"
 
 
 abbreviation "mono_sampler \<equiv> monotone (fun_ord ((\<le>) :: 'a sampler \<Rightarrow> _)) ((\<le>) :: 'b sampler \<Rightarrow> _)"
