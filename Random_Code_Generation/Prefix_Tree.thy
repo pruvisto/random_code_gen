@@ -209,6 +209,24 @@ proof (intro pairwiseI pairwise'I; elim imageE; clarify)
 qed
 
 
+instantiation ptree :: (type) Inf
+begin
+
+lift_definition Inf_ptree :: "'a ptree set \<Rightarrow> 'a ptree" is
+  "\<lambda>X. if X = {} then {} else Inf X"
+  by (auto simp: pairwise_def)
+
+instance ..
+
+end
+
+lemma Inf_ptree_lower: "x \<in> X \<Longrightarrow> Inf X \<le> (x :: 'a ptree)"
+  by transfer auto
+
+lemma Inf_ptree_greatest: "X \<noteq> {} \<Longrightarrow> (\<And>y. y \<in> X \<Longrightarrow> x \<le> y) \<Longrightarrow> Inf X \<ge> (x :: 'a ptree)"
+  by transfer auto  
+
+
 instantiation ptree :: (type) Sup
 begin
 
@@ -241,10 +259,23 @@ lemma Sup_ptree_upper:
   shows   "t \<le> Sup Y"
   using assms unfolding ptree_compatible_def by transfer auto
 
+lemma ptree_compatible_altdef:
+  "ptree_compatible X \<longleftrightarrow> (\<exists>t. \<forall>t'\<in>X. t' \<le> t)"
+  apply auto
+  using Sup_ptree_upper apply auto[1]
+  unfolding ptree_compatible_def
+  apply (auto simp: pairwise_def pairwise'_def less_eq_ptree_altdef intro: set_ptreeD)
+  done
+
 lemma Sup_ptree_least:
-  assumes "ptree_compatible Y" "\<And>t'. t' \<in> Y \<Longrightarrow> t' \<le> t"
-  shows   "Sup Y \<le> t"
-  using assms unfolding ptree_compatible_def by transfer auto
+  assumes "\<And>t'. t' \<in> Y \<Longrightarrow> t' \<le> t"
+  shows   "Sup Y \<le> (t :: 'a ptree)"
+proof -
+  have "ptree_compatible Y"
+    unfolding ptree_compatible_altdef using assms by blast
+  thus ?thesis
+    using assms unfolding ptree_compatible_def by transfer auto
+qed
 
 instance ptree :: (type) ccpo
   by intro_classes (use Sup_ptree_upper Sup_ptree_least ptree_chain_imp_compatible in blast)+
@@ -359,6 +390,10 @@ lemma set_ptree_bind:
   "set_ptree (bind_ptree t f) = (\<Union>xs\<in>set_ptree t. (@) xs ` set_ptree (f xs))"
   by transfer auto
 
+lemma bind_ptree_mono: 
+  "t \<le> t' \<Longrightarrow> (\<And>x. x \<in> set_ptree t \<Longrightarrow> f x \<le> f' x) \<Longrightarrow> bind_ptree t f \<le> bind_ptree t' f'"
+  by transfer fast
+
 lemma prefix_of_ptree_bind:
   "prefix_of_ptree (bind_ptree t f) xs =
      do {ys \<leftarrow> prefix_of_ptree t xs;
@@ -422,6 +457,5 @@ next
       by simp
   qed
 qed
-
 
 end
